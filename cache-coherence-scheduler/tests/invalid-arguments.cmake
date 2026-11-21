@@ -30,6 +30,12 @@ expect_rejection("doesn't allow an argument"
     --cpus=0,0,1,1 --pmu=enabled)
 expect_rejection("--iterations must be an integer"
     --pmu --cpus=0,0,1,1 --iterations=0)
+expect_rejection("--pmu-profile must be generic or intel-n150"
+    --cpus=0,0,1,1 --pmu-profile=invalid)
+expect_rejection("--pmu-profile must be generic or intel-n150"
+    --cpus=0,0,1,1 --pmu-profile=)
+expect_rejection("--iterations must be an integer"
+    --pmu-profile=intel-n150 --cpus=0,0,1,1 --iterations=0)
 
 set(results_file "${CMAKE_CURRENT_BINARY_DIR}/static-placement-rejected-results.txt")
 set(existing_results "previous results\n")

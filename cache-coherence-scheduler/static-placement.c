@@ -59,6 +59,9 @@ struct benchmark_options {
 
     /// <summary>Whether to request user-space hardware counters for each worker.</summary>
     bool collect_pmu_counters;
+
+    /// <summary>Whether to use the native counters verified on the Intel N150.</summary>
+    bool use_intel_n150_pmu;
 };
 
 /// <summary>One Linux perf event requested by the benchmark.</summary>
@@ -71,6 +74,9 @@ struct pmu_event_definition {
 
     /// <summary>Linux event selector within the category.</summary>
     uint64_t config;
+
+    /// <summary>Additional event configuration, including an offcore response filter.</summary>
+    uint64_t config1;
 };
 
 /// <summary>One counter's handle, measurement, and explicit failure state.</summary>
@@ -115,22 +121,29 @@ struct cpu_frequency_snapshot {
 /* Adjacent pairs are scheduled together so IPC and access-minus-miss estimates
    do not combine events measured during different multiplexing windows. */
 static const struct pmu_event_definition pmu_events[PMU_EVENT_COUNT] = {
-    {"cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES},
-    {"instructions", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS},
-    {"branches", PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_INSTRUCTIONS},
-    {"branch_misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_MISSES},
-    {"cache_references", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_REFERENCES},
-    {"cache_misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES},
-    {"l1d_load_accesses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_L1D, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS)},
-    {"l1d_load_misses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_L1D, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS)},
-    {"llc_load_accesses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_LL, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS)},
-    {"llc_load_misses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_LL, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS)},
-    {"dtlb_load_accesses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_DTLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS)},
-    {"dtlb_load_misses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_DTLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS)},
-    {"dtlb_store_accesses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_DTLB, PERF_COUNT_HW_CACHE_OP_WRITE, PERF_COUNT_HW_CACHE_RESULT_ACCESS)},
-    {"dtlb_store_misses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_DTLB, PERF_COUNT_HW_CACHE_OP_WRITE, PERF_COUNT_HW_CACHE_RESULT_MISS)},
-    {"itlb_accesses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_ITLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS)},
-    {"itlb_misses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_ITLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS)}
+    {"cycles", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, 0},
+    {"instructions", PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS, 0},
+    {"branches", PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_INSTRUCTIONS, 0},
+    {"branch_misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_MISSES, 0},
+    {"cache_references", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_REFERENCES, 0},
+    {"cache_misses", PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES, 0},
+    {"l1d_load_accesses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_L1D, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS), 0},
+    {"l1d_load_misses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_L1D, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS), 0},
+    {"llc_load_accesses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_LL, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS), 0},
+    {"llc_load_misses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_LL, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS), 0},
+    {"dtlb_load_accesses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_DTLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS), 0},
+    {"dtlb_load_misses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_DTLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS), 0},
+    {"dtlb_store_accesses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_DTLB, PERF_COUNT_HW_CACHE_OP_WRITE, PERF_COUNT_HW_CACHE_RESULT_ACCESS), 0},
+    {"dtlb_store_misses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_DTLB, PERF_COUNT_HW_CACHE_OP_WRITE, PERF_COUNT_HW_CACHE_RESULT_MISS), 0},
+    {"itlb_accesses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_ITLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_ACCESS), 0},
+    {"itlb_misses", PERF_TYPE_HW_CACHE, CACHE_EVENT_CONFIG(PERF_COUNT_HW_CACHE_ITLB, PERF_COUNT_HW_CACHE_OP_READ, PERF_COUNT_HW_CACHE_RESULT_MISS), 0}
+};
+
+/* Encodings come from the device's perf list --details and verified perf stat runs. */
+static const struct pmu_event_definition intel_n150_pmu_events[] = {
+    {"mem_load_uops_retired.l1_miss", PERF_TYPE_RAW, UINT64_C(0x08d1), 0},
+    {"itlb_misses.walk_completed", PERF_TYPE_RAW, UINT64_C(0x0e85), 0},
+    {"ocr.demand_rfo.l3_hit.snoop_hitm", PERF_TYPE_RAW, UINT64_C(0x01b7), UINT64_C(0x10003c0002)}
 };
 
 /// <summary>Inputs and results for one worker, kept alive until its thread is joined.</summary>
@@ -192,6 +205,7 @@ static void *run_pinned_worker(void *worker_state_pointer);
 static void write_run_metadata(FILE *output_stream, const struct benchmark_options *options, int argument_count, char **arguments, const struct cpu_frequency_snapshot before[WORKER_COUNT], const struct cpu_frequency_snapshot after[WORKER_COUNT]);
 static void write_worker_pmu_results(FILE *output_stream, const struct worker_state *worker);
 static void open_worker_pmu_counters(struct worker_state *worker);
+static const struct pmu_event_definition *get_pmu_event_definition(const struct benchmark_options *options, int event);
 static void set_worker_pmu_counters_enabled(struct worker_state *worker, bool enabled);
 static void read_and_close_worker_pmu_counters(struct worker_state *worker);
 static void capture_cpu_frequency(const struct benchmark_options *options, struct cpu_frequency_snapshot snapshots[WORKER_COUNT]);
@@ -239,6 +253,7 @@ static struct benchmark_options parse_benchmark_options(int argument_count, char
         {"idle-us",    required_argument, NULL, 'i'},
         {"output",     required_argument, NULL, 'o'},
         {"pmu",        no_argument,       NULL, 'm'},
+        {"pmu-profile", required_argument, NULL, 'P'},
         {"help",       no_argument,       NULL, 'h'},
         {NULL,         0,                 NULL, 0}
     };
@@ -310,6 +325,16 @@ static struct benchmark_options parse_benchmark_options(int argument_count, char
             options.collect_pmu_counters = true;
             break;
 
+        case 'P':
+            if (strcmp(optarg, "generic") != 0 && strcmp(optarg, "intel-n150") != 0)
+            {
+                exit_with_error("--pmu-profile must be generic or intel-n150");
+            }
+
+            options.use_intel_n150_pmu = strcmp(optarg, "intel-n150") == 0;
+            options.collect_pmu_counters = true;
+            break;
+
         case 'h':
             print_command_line_help(stdout, arguments[0]);
             exit(EXIT_SUCCESS);
@@ -331,6 +356,22 @@ static struct benchmark_options parse_benchmark_options(int argument_count, char
             (long double)options.target_increments_per_second >= (long double)UINT64_MAX)
     {
         exit_with_error("Requested rate and work exceed the supported timing range");
+    }
+
+    if (options.use_intel_n150_pmu)
+    {
+        char cpu_info[65536];
+        int error_code = read_optional_text_file("/proc/cpuinfo", cpu_info, sizeof(cpu_info));
+
+        if (error_code != 0)
+        {
+            exit_with_error("Cannot verify the Intel N150 PMU profile: %s", strerror(error_code));
+        }
+
+        if (strstr(cpu_info, "GenuineIntel") == NULL || strstr(cpu_info, "Intel(R) N150") == NULL)
+        {
+            exit_with_error("--pmu-profile intel-n150 requires an Intel N150 CPU");
+        }
     }
 
     return options;
@@ -612,8 +653,9 @@ static void write_run_metadata(
     write_file_metadata(output_stream, "/sys/devices/system/cpu/smt/active");
     fputs(",\"perf_event_paranoid\":", output_stream);
     write_file_metadata(output_stream, "/proc/sys/kernel/perf_event_paranoid");
-    fprintf(output_stream, ",\"pmu_requested\":%s,\"cpu_slots\":[",
-        options->collect_pmu_counters ? "true" : "false");
+    fprintf(output_stream, ",\"pmu_requested\":%s,\"pmu_profile\":\"%s\",\"cpu_slots\":[",
+        options->collect_pmu_counters ? "true" : "false",
+        options->use_intel_n150_pmu ? "intel-n150" : "generic");
 
     for (int slot = 0; slot < WORKER_COUNT; ++slot)
     {
@@ -653,20 +695,23 @@ static void write_worker_pmu_results(FILE *output_stream, const struct worker_st
         return;
     }
 
-    fputs("{\"scope\":\"thread_user_space\",\"events\":{", output_stream);
+    fprintf(output_stream, "{\"scope\":\"thread_user_space\",\"profile\":\"%s\",\"events\":{",
+        worker->options->use_intel_n150_pmu ? "intel-n150" : "generic");
 
     for (int event = 0; event < PMU_EVENT_COUNT; ++event)
     {
         const struct pmu_counter_result *counter = &worker->pmu_counters[event];
+        const struct pmu_event_definition *definition = get_pmu_event_definition(worker->options, event);
 
         if (event != 0)
         {
             fputc(',', output_stream);
         }
 
-        write_json_string(output_stream, pmu_events[event].name);
-        fprintf(output_stream, ":{\"type\":%" PRIu32 ",\"config\":%" PRIu64 ",\"group\":%d,",
-            pmu_events[event].type, pmu_events[event].config, event / 2);
+        write_json_string(output_stream, definition->name);
+        fprintf(output_stream,
+            ":{\"type\":%" PRIu32 ",\"config\":%" PRIu64 ",\"config1\":%" PRIu64 ",\"group\":%d,",
+            definition->type, definition->config, definition->config1, event / 2);
 
         if (counter->failure_reason != NULL)
         {
@@ -693,7 +738,17 @@ static void write_worker_pmu_results(FILE *output_stream, const struct worker_st
     fputs("},\"ipc_estimate\":", output_stream);
     write_pmu_pair_metric(output_stream, &worker->pmu_counters[0], &worker->pmu_counters[1], true);
     fputs(",\"l1d_load_hits_estimate\":", output_stream);
-    write_pmu_pair_metric(output_stream, &worker->pmu_counters[6], &worker->pmu_counters[7], false);
+
+    if (worker->options->use_intel_n150_pmu)
+    {
+        fputs("{\"value\":null,\"reason\":\"Generic L1D accesses and native retired-load misses are not a matched hit-count pair\"}",
+            output_stream);
+    }
+    else
+    {
+        write_pmu_pair_metric(output_stream, &worker->pmu_counters[6], &worker->pmu_counters[7], false);
+    }
+
     fputs(",\"llc_load_hits_estimate\":", output_stream);
     write_pmu_pair_metric(output_stream, &worker->pmu_counters[8], &worker->pmu_counters[9], false);
     fputc('}', output_stream);
@@ -707,11 +762,13 @@ static void open_worker_pmu_counters(struct worker_state *worker)
     for (int event = 0; event < PMU_EVENT_COUNT; ++event)
     {
         struct pmu_counter_result *counter = &worker->pmu_counters[event];
+        const struct pmu_event_definition *definition = get_pmu_event_definition(worker->options, event);
         int leader = event % 2 != 0 ? worker->pmu_counters[event - 1].file_descriptor : -1;
         struct perf_event_attr attributes = {
-            .type = pmu_events[event].type,
+            .type = definition->type,
             .size = sizeof(struct perf_event_attr),
-            .config = pmu_events[event].config,
+            .config = definition->config,
+            .config1 = definition->config1,
             .read_format = PERF_FORMAT_GROUP |
                 PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING,
             .disabled = leader < 0,
@@ -730,6 +787,32 @@ static void open_worker_pmu_counters(struct worker_state *worker)
             counter->error_code = errno;
         }
     }
+}
+
+/// <summary>Selects a generic counter or an explicitly requested Intel N150 native counter.</summary>
+/// <param name="options">Validated run options containing the selected profile.</param>
+/// <param name="event">Counter slot in the fixed adjacent-pair layout.</param>
+/// <returns>The definition used consistently for collection and JSON reporting.</returns>
+static const struct pmu_event_definition *get_pmu_event_definition(
+    const struct benchmark_options *options,
+    int event)
+{
+    if (options->use_intel_n150_pmu)
+    {
+        switch (event)
+        {
+        case 7:
+            return &intel_n150_pmu_events[0];
+
+        case 14:
+            return &intel_n150_pmu_events[1];
+
+        case 15:
+            return &intel_n150_pmu_events[2];
+        }
+    }
+
+    return &pmu_events[event];
 }
 
 /// <summary>Starts or stops each successfully opened counter group.</summary>
@@ -1242,6 +1325,8 @@ static void print_command_line_help(FILE *output_stream, const char *executable_
         "                                  Default: stdout; existing files are kept\n"
         "  --pmu                           Request per-thread hardware counters\n"
         "                                  Unavailable counters have explicit reasons\n"
+        "  --pmu-profile generic|intel-n150 Select counters and enable --pmu\n"
+        "                                  Default: generic; native profile requires N150\n"
         "  --help                          Show this help\n",
         executable_name);
 }
@@ -1496,7 +1581,7 @@ int main(int argument_count, char **arguments)
        Summed worker CPU time / wall time is CPU equivalents, not physical-core utilization. */
     fprintf(
         results_stream,
-        "{\"schema_version\":2,\"pid\":%ld,\"placement\":\"%s\",\"layout\":\"%s\","
+        "{\"schema_version\":3,\"pid\":%ld,\"placement\":\"%s\",\"layout\":\"%s\","
         "\"cpu_slots\":[%d,%d,%d,%d],\"cache_line_bytes\":%zu,"
         "\"iterations_per_thread\":%" PRIu64 ",\"compute\":%" PRIu64 ","
         "\"target_increments_per_second_per_thread\":%" PRIu64 ","

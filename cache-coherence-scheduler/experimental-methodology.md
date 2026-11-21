@@ -232,7 +232,7 @@ To collect the four conditions in one portable file, use the same output path fo
 "$BIN" --cpus "$CPUS" --placement colocated --layout padded --output results.txt
 ```
 
-Copy `results.txt` back to the analysis machine. It is newline-delimited JSON, readable as plain text, with the same settings and metrics as console output. A new file will contain four lines if all four runs succeed. Repeating the commands adds more records; use separate files for different devices or experiment sessions. New records have `schema_version: 2` and automatically include machine/invocation/topology context; older records lack these additional fields. Record relevant background activity and power conditions separately, since snapshots do not continuously monitor them.
+Copy `results.txt` back to the analysis machine. It is newline-delimited JSON, readable as plain text, with the same settings and metrics as console output. A new file will contain four lines if all four runs succeed. Repeating the commands adds more records; use separate files for different devices or experiment sessions. New records have `schema_version: 3`, including the PMU profile and additional event configuration; version 2 introduced machine/invocation/topology context. Record relevant background activity and power conditions separately, since snapshots do not continuously monitor them.
 
 File output happens after timing and result validation. Open, write, flush, and close failures return a nonzero exit status. A failed write can leave a partial final record, which must not be analyzed as a successful run. Run sequentially when sharing an output file; concurrent writers are not coordinated.
 
@@ -245,6 +245,7 @@ File output happens after timing and result validation. Open, write, flush, and 
 | `--idle-us N` | Requested sleep between batches, excluding the final batch; default 0, maximum 1,000,000. Actual sleeps can be longer. |
 | `--output PATH` | Append one JSON result line to a text file instead of stdout; earlier runs are preserved. |
 | `--pmu` | Request per-worker user-space hardware counters. Missing or failed events are explicitly unavailable; the workload still completes. |
+| `--pmu-profile generic\|intel-n150` | Select the counter profile and enable PMU collection. The default is generic; the native profile requires an Intel N150. |
 
 For example, append `--batch 1000 --idle-us 200` to every condition to explore lower runnable demand, or vary `--compute` to change the work/coherence ratio. Measure resulting utilization rather than assuming either knob produces a particular percentage.
 
@@ -289,7 +290,7 @@ For the lower-load physical-Linux experiment, add `--pmu` to every condition:
 
 Use `0,0,1,1` only after verifying CPUs 0 and 1 are eligible and belong to distinct physical cores. Repeat with colocated/shared, baseline/padded, and colocated/padded using identical work and instrumentation settings. No separate `perf` executable or library is needed for built-in collection; Linux kernel headers provide the perf API.
 
-Each thread's `pmu.events` records these requested event pairs:
+With the default generic profile, each thread's `pmu.events` records these requested event pairs:
 
 | Pair | Purpose |
 | --- | --- |
@@ -320,7 +321,32 @@ If permissions deny counters, inspect the recorded `perf_event_paranoid` and err
 
 On the Linux device, validate a short PMU-enabled run: confirm valid JSON, per-thread counts or explicit unavailable reasons, positive running time for usable events, and null unavailable counts. Cross-check cycles/instructions with supported external `perf` measurements, accounting for their broader whole-process scope. Validate a permission-restricted run as well, and ensure all worker counters still reach the expected total even when no PMU event is usable. These native PMU checks remain unexecuted by the assistant.
 
-HITM, runnable waiting, service tail latency, and whole-machine utilization are not collected internally. Use supported external tools where needed and record their scope; whole-process perf measurements include setup/teardown outside the JSON timing interval. Repeat and randomize conditions, keep inputs and machine policy matched, and report regressions or null results rather than assuming co-location wins.
+The generic profile does not collect HITM. Runnable waiting, service tail latency, and whole-machine utilization are not collected internally. Use supported external tools where needed and record their scope; whole-process perf measurements include setup/teardown outside the JSON timing interval. Repeat and randomize conditions, keep inputs and machine policy matched, and report regressions or null results rather than assuming co-location wins.
+
+### Verified Intel N150 native profile
+
+The user verified these three native selectors with `perf stat` on the Intel N150. Their encodings below come from that device's `perf list --details`, not from another Intel model. Select them explicitly with `--pmu-profile intel-n150`; this enables collection without also supplying `--pmu`. The program checks `/proc/cpuinfo` for the Intel vendor and N150 model before using raw encodings. `--pmu` alone and `--pmu-profile generic` retain the original generic counter requests.
+
+| JSON event name | Meaning | Raw config | Config1 |
+| --- | --- | --- | --- |
+| `mem_load_uops_retired.l1_miss` | Retired load micro-operations missing L1 data cache | `0x08d1` | `0` |
+| `itlb_misses.walk_completed` | Completed instruction-fetch page walks | `0x0e85` | `0` |
+| `ocr.demand_rfo.l3_hit.snoop_hitm` | RFO/software exclusive-prefetch requests receiving modified data on the L3-hit snoop path | `0x01b7` | `0x10003c0002` |
+
+The native L1 event replaces `l1d_load_misses`. The native walk and RFO/HITM events replace the generic `itlb_accesses`/`itlb_misses` pair, keeping the total at 16 counters. All remaining generic requests, pair scheduling, coverage reporting, and explicit failure handling are unchanged. The native event names identify their actual meanings: walks are not ITLB accesses, and retired-load misses are not silently relabeled as generic cache misses.
+
+`l1d_load_hits_estimate` is null with an explicit reason in this profile, because generic accesses and native retired-load misses are not assumed to form a matched pair. IPC and the generic LLC estimate retain their existing definitions. `pmu.profile` and `metadata.pmu_profile` identify the chosen profile, and every event reports `type`, `config`, and `config1`, including unavailable events. The RFO filter is passed through `perf_event_attr.config1`.
+
+From the directory containing `static-placement.c` on Linux:
+
+```bash
+cc -std=c11 -O3 -pthread static-placement.c -o static-placement
+./static-placement --cpus 0,0,1,1 --placement baseline --layout shared --iterations 600000000 --rate 10000000 --batch 50000 --pmu-profile intel-n150 --output physical-n150-results.txt
+```
+
+Use the same profile for all four placement/layout conditions. First run a short check with `--iterations 5000000` and no `--rate`, confirming all three native fields report `status: "ok"` and positive running time. Successful standalone `perf stat` requests do not establish that the benchmark's grouped collection works; compilation and integrated runtime validation of this profile remain pending.
+
+The HITM event covers a specific L3-hit response path and does not identify a cache-line address or previous writer in this counting mode. Zero is a valid count and does not rule out false sharing on paths outside the filter. Do not equate this counter with all coherence traffic.
 
 ## 9. Sources and implementation references
 
