@@ -2,9 +2,9 @@
 
 Updated: 2026-11-22. Raw recording timestamps use UTC.
 
-**Finding:** on the tested Intel N150, co-locating the known false-sharing pair reduces total worker CPU cost. At higher demand it also restores a requested throughput that baseline placement cannot sustain. The primary padded controls show substantially smaller placement effects. Later compute=4 trials and controls were noisy; their cause remains unresolved. These are static-workload results, not an implemented dynamic scheduler or a publication-novelty claim.
+**Finding:** on the tested Intel N150, co-locating the known false-sharing pair reduces total worker CPU cost. At higher demand it also restores a requested throughput that baseline placement cannot sustain. The primary padded controls show substantially smaller placement effects. Three uneven-demand rounds confirm **64.16% lower mean shared CPU cost** without a visible independent-worker rate penalty, but their **26.47% padded CPU saving** also reproduces and limits attribution. Later compute=4 trials and controls were noisy; their cause remains unresolved. These are static-workload results, not an implemented dynamic scheduler or a publication-novelty claim.
 
-**Stopping point:** the hardware/PMU/placement-noise diagnostic branch is closed at the user's request. Preserve the supported static results and the qualifications below; do not delay the scheduling goal by continuing to diagnose the compute=4 anomaly.
+**Stopping point:** the hardware/PMU/placement-noise diagnostic branch is closed at the user's request. The bounded three-round uneven-demand confirmation is also complete; no further repetitions are needed for this point. Preserve the supported static results and their qualifications, and move to realistic workload validation rather than more hardware diagnostics or synthetic repetitions.
 
 ## What we tested and under what conditions
 
@@ -26,7 +26,7 @@ The target is physical Ubuntu/Linux on an Intel N150, kernel `7.0.0-43-generic`,
 | E: unpaced execution | Same 1400-MHz limits | Uncapped (`--rate` omitted; recorded rate = 0) | None | None; fixed work | Three per condition |
 | F: first compute increment | Same 1400-MHz limits; `--compute 1` | Uncapped | None | None; fixed work | Three per condition |
 
-Each primary experiment has 12 records: baseline/shared, colocated/shared, baseline/padded, and colocated/padded across three rounds. The first two rounds use that order; the third reverses it. All **72 primary records** parsed successfully, had available requested PMU events, and reported expected CPU endpoints. Another **50 follow-up records** are summarized separately below: **122 reviewed benchmark records total**, excluding the earlier generic pilot and smoke/probe artifacts. Frequency limits are output-time observations, not proof of continuously fixed clocks.
+Each primary experiment has 12 records: baseline/shared, colocated/shared, baseline/padded, and colocated/padded across three rounds. The first two rounds use that order; the third reverses it. All **72 primary records** parsed successfully, had available requested PMU events, and reported expected CPU endpoints. Another **50 follow-up records** are summarized separately below: **122 original primary/follow-up benchmark records**, plus **12 uneven-demand placement records** and **one uneven-demand functional smoke**, giving **135 reviewed physical-Linux records** here. The uneven-demand results and smoke are not pooled with the original results. The earlier generic pilot and other smoke/probe artifacts remain excluded from this count. Frequency limits are output-time observations, not proof of continuously fixed clocks.
 
 Padded co-location is a **negative control**, not a recommended scheduler action: it tests whether placement changes affect performance without the intended same-cache-line counter sharing. Padding does not prove that every other source of interference is absent.
 
@@ -159,6 +159,69 @@ All remaining diagnostics use padded layout. Normal mapping means CPU slots `0,0
 
 **Disposition:** intermittent compute=4 execution-cost variation remains unresolved. It is not evidence that all earlier co-location results disappear, nor that compute=4 has a reliably quantified benefit boundary. Further hardware/PMU/core-pair diagnostics are **stopped**, not a prerequisite for moving on. The proposed one-worker-per-core test was withdrawn; no results from it are included.
 
+## Uneven-demand functional smoke (not pooled)
+
+Per-worker `--rates` and `--computes` controls are implemented in T1-T4 identity order, independent of CPU placement. Existing scalar controls retain uniform behavior; scalar/list forms for the same control cannot be combined. Schema 4 reports effective per-thread settings and uses `null` for unequal run-level compute, rate, or nominal duration as appropriate. Build, CTest, and runnable smoke/comparison commands are in [experimental methodology](experimental-methodology.md#uneven-worker-demand).
+
+The user supplied `uneven-demand-smoke.jsonl`: one colocated/shared N150 run recorded at `2026-11-23T04:41:32Z` (November 22 locally), with 1,000 increments per worker, batch 100, idle 0, and no benchmark PMUs. Recorded frequency limits are 700-3600 MHz; no fixed-clock claim is made. Total wall time is 1.000377981 seconds. This is a short functional check, not a placement comparison.
+
+| Worker | CPU | Compute steps/increment | Requested increments/s | Achieved increments/s | Completion seconds |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| T1 | 1 | 0 | Unpaced (0) | 10,458,063.167 | 0.000095620 |
+| T2 | 0 | 1 | 1,000 | 999.724 | 1.000275803 |
+| T3 | 0 | 2 | 2,000 | 1,998.683 | 0.500329368 |
+| T4 | 1 | 3 | 4,000 | 3,995.395 | 0.250288113 |
+
+**Verified:** valid schema-4 JSON, effective workload settings, expected start/end CPU assignments, nullable unequal run-level fields, nominal durations, achieved-rate arithmetic, and all four compute checksums independently recomputed from thread seeds using `1000 * compute` unsigned LCG steps modulo `2^64`. The successful record reflects the benchmark's fixed-work validation. T2/T3/T4 finish just after their 1/0.5/0.25-second nominal deadlines, achieving 99.9724%/99.9341%/99.8849% of their requested rates; no paced worker finishes early.
+
+**Limit:** this smoke case passes its functional checks, not a declared scheduling-admission threshold. It establishes neither co-location benefit under uneven demand nor common-duration steady-state admission or application tail latency. Separate CTest output has not been supplied. The 122 earlier measurements and their conclusions are unchanged; the hardware/PMU diagnostic branch remains closed.
+
+## Uneven-demand placement screen (one round)
+
+`n150-uneven-demand.jsonl` contains one run per condition, in baseline/shared, colocated/shared, baseline/padded, colocated/padded order. Every worker completes 600M increments; T1/T4 request 40M/s with compute=1, and sharing T2/T3 request 10M/s with compute=0. CPU slots remain `0,0,1,1`, batch 50,000, idle 0, native Intel N150 PMUs enabled. Recorded CPU0/1 limits remain 700-3600 MHz with `powersave`; these are not continuously measured clocks. This screen is separate from A-F and the compute=4 diagnostics.
+
+| Condition | Total worker CPU seconds | Sharing T2/T3 CPU seconds | Independent T1/T4 CPU seconds | Minimum T1/T4 rate attainment | Minimum T2/T3 rate attainment |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Baseline/shared | 74.301 | 63.534 | 10.767 | 99.9875% | 99.9995% |
+| Colocated/shared | 26.211 | 15.494 | 10.716 | 99.9988% | 99.9996% |
+| Baseline/padded | 35.753 | 19.253 | 16.500 | 99.9948% | 99.9995% |
+| Colocated/padded | 26.366 | 15.653 | 10.713 | 99.9988% | 99.9997% |
+
+Rate attainment is `100 * achieved / requested`, with the minimum taken over each worker pair. All workers deliver within 0.013% of their requested rate; this is an observed shortfall, not a silently declared admission tolerance.
+
+**Shared result:** total worker CPU time falls **64.72%**, from 74.300618885 to 26.210598532 seconds. Sharing T2/T3 CPU falls **75.61%**, from 63.533552788 to 15.494247957 seconds. Independent T1/T4 CPU is nearly unchanged: 10.767066097 to 10.716350575 seconds, **0.47% lower**, with no visible rate penalty in this screen.
+
+**Control and counter evidence:** padded total CPU also falls **26.26%**, from 35.752591144 to 26.365563428 seconds; its independent-pair CPU falls 35.07% and sharing-pair CPU falls 18.70%. Consequently, the entire shared-layout saving cannot be attributed to false sharing. Summed raw selected RFO/HITM counts fall from **89,763,756 to 0** in shared layout and **66 to 1** in padded layout, supporting a coherence component without isolating every placement effect. All 256 requested per-worker event statuses are available; multiplex running fractions span approximately 36.87-38.29%. The previously stated counter scope/scaling limitations apply.
+
+**Verified and limited:** effective settings, CPU endpoints, nominal deadlines, achieved-rate arithmetic, and all 16 worker checksums were checked; checksums were independently recomputed using logarithmic affine LCG arithmetic modulo `2^64`. One run per condition establishes neither repeatability nor a universal scheduling/admission boundary. Nominal durations are 15 seconds for T1/T4 and 60 seconds for T2/T3; observed independent completion is approximately 15.0001-15.0019 seconds and sharing completion approximately 60.0001-60.0003 seconds. Independent workers stop competing long before the sharing pair finishes. Whole-run wall time remains approximately 60 seconds and aggregate throughput approximately 40M/s; neither should be compared directly with the initial summed 100M/s requested rate. This is finite-work evidence, not common-duration steady-state admission or application tail latency. Hardware/PMU noise diagnostics remain closed.
+
+## Uneven-demand confirmation (three rounds)
+
+The original screen plus `n150-uneven-demand-round2-literal.jsonl` and `n150-uneven-demand-round3-literal.jsonl` provide **12 records, three per condition**. Rounds 1/2 use baseline/shared, colocated/shared, baseline/padded, colocated/padded order; round 3 reverses it. The workload, CPU budget, recorded frequency policy, and native PMU profile match the first-round settings above. Only these three four-record files are included, not other retry outputs.
+
+| Condition | Mean total worker CPU seconds | Mean sharing T2/T3 CPU seconds | Mean independent T1/T4 CPU seconds | Minimum T1/T4 rate attainment | Minimum T2/T3 rate attainment |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Baseline/shared | 73.740 | 62.988 | 10.752 | 99.9871% | 99.9995% |
+| Colocated/shared | 26.428 | 15.719 | 10.708 | 99.9988% | 99.9994% |
+| Baseline/padded | 36.008 | 19.192 | 16.816 | 99.9948% | 99.9995% |
+| Colocated/padded | 26.477 | 15.777 | 10.701 | 99.9987% | 99.9994% |
+
+CPU values are condition means; rate attainment is the worst worker value within each pair across all three runs. Reductions use ratios of condition mean CPU times, not averages of round percentages.
+
+| Round | Shared CPU reduction | Padded CPU reduction | Shared baseline raw RFO/HITM | Shared colocated raw RFO/HITM |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 64.72% | 26.26% | 89,763,756 | 0 |
+| 2 | 64.01% | 27.15% | 83,239,402 | 0 |
+| 3 (reversed) | 63.74% | 26.00% | 89,857,945 | 2 |
+
+**Confirmed at this demand point:** mean shared total CPU falls 73.740079453 to 26.427554648 seconds (**64.16%**). Mean sharing-pair CPU falls **75.04%**, from 62.988426272 to 15.719282832 seconds. Mean independent-pair CPU remains nearly unchanged, 10.751653181 to 10.708271816 seconds (**0.40% lower**); independent CPU does not decrease in every individual round, but no delivered-rate penalty is visible. The maximum per-worker rate shortfall across all conditions is 0.012857%, within the previously reported 0.013%.
+
+**Replicated control effect:** mean padded total CPU falls 36.007749932 to 26.477288493 seconds (**26.47%**). Padded independent-pair CPU falls 36.37% and sharing-pair CPU falls 17.80%. This is a persistent non-sharing placement effect in these comparisons, not a reason to assign the full shared saving to false sharing. Padded raw selected RFO/HITM counts remain low: baseline 66/17/7 versus colocated 1/2/3.
+
+**Verification and limits:** all 12 records, intended run order, 48 independently recomputed checksums/settings/CPU endpoints/pacing deadlines, achieved-rate arithmetic, and 768 requested PMU statuses check out. Multiplex running fractions span approximately **29.21-51.00%**, so event scaling and phase-coverage limitations remain important. The 15/60-second unequal-duration and early-finish limitations from the screen still apply. These repeated finite-work results establish neither a universal admission boundary nor common-duration steady-state capacity, application tail latency, energy savings, or exact fixed-clock operation.
+
+**Disposition:** the bounded synthetic confirmation is complete. No more repetitions for this point or hardware/PMU noise diagnostics are requested. Next is selection and validation of a realistic workload tied to the scheduling objective.
+
 ## Earlier exploratory results, not pooled
 
 | Evidence | Result | Qualification |
@@ -171,7 +234,7 @@ Native-event smoke checks subsequently established grouped counter availability.
 
 ## Evidence and reproducibility
 
-Original artifacts remain outside Git in `C:\Users\ericodoom\Downloads`; no result files were modified or copied into the repository. Eight primary files contain 72 records and nine follow-up benchmark files contain 50 records. All 122 report build timestamp `Nov 20 2026 21:50:27`. The documentation-time checkout is `50ee6f1dea23ee5205cee4570a8670c16e59523f`; the records do not embed a Git revision or binary digest, so exact binary-to-commit provenance is not independently established. Paths below are relative to Downloads; repeated folder names reflect the supplied archive extraction. Paired clock/policy logs remain alongside the benchmark files. The table fingerprints benchmark artifacts and selected diagnostic logs, not every auxiliary clock log.
+Original artifacts remain outside Git in `C:\Users\ericodoom\Downloads`; no result files were modified or copied into the repository. Eight primary files contain 72 records and nine follow-up benchmark files contain 50 records. These 122 report build timestamp `Nov 20 2026 21:50:27`; the 12 uneven-demand records across three files and separate one-record smoke report `Nov 22 2026 20:40:50`. The earlier documentation-time checkout was `50ee6f1dea23ee5205cee4570a8670c16e59523f`; the records do not embed a Git revision or binary digest, so exact binary-to-commit provenance is not independently established. Paths below are relative to Downloads; repeated folder names reflect the supplied archive extraction. Paired clock/policy logs remain alongside the benchmark files. The table has 27 fingerprints covering benchmark artifacts, the functional smoke, and selected diagnostic logs, not every auxiliary clock log.
 
 | Artifact | Role | SHA-256 |
 | --- | --- | --- |
@@ -198,15 +261,19 @@ Original artifacts remain outside Git in `C:\Users\ericodoom\Downloads`; no resu
 | `n150-clock-baseline.txt` | Follow-up busy-clock check | `ec86432700941e4f8324a374e3ed8984655c283b1e652a09c6c8e25d07331a87` |
 | `n150-clock-colocated.txt` | Follow-up busy-clock check | `2fd91ddfbac148bfe9c8abfd592e02af9fbeacea4b41a0d9447e12a84a425652` |
 | `placement.txt` | Earlier generic-profile pilot | `0f104c9459b32986caa5d5ba285fe50d597b59eb08988ce554b47627873bb619` |
+| `uneven-demand-smoke.jsonl` | Schema-4 uneven-demand functional smoke, 1 record; not pooled | `edb35d6c552a5f56928f9d99ed99697ccc728bdede50adb77bc14e2bf941b100` |
+| `n150-uneven-demand.jsonl` | Uneven-demand placement screen, 4 records; one per condition, not pooled | `5db6e9f8567565cb8d6f98c22fda0af9ab0a88ffec841f17859c972126b0e66e` |
+| `n150-uneven-demand-round2-literal.jsonl` | Uneven-demand confirmation round 2, 4 records | `d67938cf13351a21302bf851631a4a2113628e31d43f0746763ea2b5f138b228` |
+| `n150-uneven-demand-round3-literal.jsonl` | Uneven-demand confirmation round 3, reversed, 4 records | `3cca2dd96e0ca1033a591504bddfc806eca43f72ae5af12e55bc946c048b8a72` |
 
 For commands, counter encodings, scope, and error handling, see [experimental methodology](experimental-methodology.md), section 8. The user compiled and executed the workloads; the assistant parsed artifacts and recomputed summaries. Benchmark results do not establish that separate argument-rejection/file-error tests passed.
 
 ## Significance, limits, and next gate
 
-**Supported:** static co-location can reduce CPU cost at matched delivered throughput and recover throughput when baseline's sharing pair falls behind. At the highest tested paced demand, it improves throughput even when both placements occupy nearly two CPUs, but does not restore the requested rate. The benefit persists unpaced and at compute=1. The primary small padded effects and repeated RFO/HITM collapse support a layout-specific coherence explanation; later noisy controls limit broader generalization.
+**Supported:** static co-location can reduce CPU cost at matched delivered throughput and recover throughput when baseline's sharing pair falls behind. At the highest tested paced demand, it improves throughput even when both placements occupy nearly two CPUs, but does not restore the requested rate. The benefit persists unpaced and at compute=1. Three unequal-demand rounds also reproduce CPU savings without a visible independent-worker rate penalty at the tested point. The primary small padded effects and repeated RFO/HITM collapse support a layout-specific coherence explanation; the unequal-demand padded effect and later noisy controls limit attribution and broader generalization.
 
 **Dynamic-policy implications:** high observed CPU occupancy can include avoidable coherence stalls, so occupancy alone cannot reject intervention. Conversely, HITM disappearing after successful co-location is not evidence that the underlying sharing relationship disappeared or that separation is now safe.
 
-**Limits:** one CPU model, core pair, synthetic counter/checksum workload, and three repetitions per primary condition; no broad statistical significance claim. PMU coverage is typically approximately 37.5%, with variation and possible phase-sensitive scaling bias. PMUs measure user-space execution, including pacing/bookkeeping, with boundaries near but not identical to CPU/wall intervals. Affinity is checked at endpoints, not continuously, and cores are not reserved. Exact constant-frequency operation and the cause of compute=4 variability are not established. Background activity, thermal/power conditions, energy, application tail latency, uneven useful-work demand, and other topologies are not established by these results.
+**Limits:** one CPU model, core pair, synthetic counter/checksum workload, and three repetitions per primary and uneven-demand condition; no broad statistical significance claim. The unequal-demand material padded effect limits attribution of its full CPU saving to false sharing. PMU coverage is typically approximately 37.5% in primary results, but spans approximately 29.21-51.00% in the uneven-demand confirmation, with possible phase-sensitive scaling bias. PMUs measure user-space execution, including pacing/bookkeeping, with boundaries near but not identical to CPU/wall intervals. Affinity is checked at endpoints, not continuously, and cores are not reserved. Exact constant-frequency operation and the cause of compute=4 variability are not established. Background activity, thermal/power conditions, energy, application tail latency, general uneven-demand admission, and other topologies are not established by these results.
 
-**Next substantive gate:** uneven useful-work demand and a realistic workload tied to the scheduling objective, not more hardware/PMU/placement-noise diagnostics. Dynamic detection, admission, migration, feedback, and research novelty remain unimplemented or unestablished.
+**Next substantive gate:** select and validate a realistic workload tied to the scheduling objective; the bounded uneven-demand confirmation is complete. Evaluate useful throughput, total worker CPU cost, and independent-work regressions with explicit service objectives. The synthetic unequal-duration averages are not common-duration steady-state or application tail-latency evidence. No more repetitions for this synthetic point or hardware/PMU/placement-noise diagnostics. Dynamic detection, admission, migration, feedback, and research novelty remain unimplemented or unestablished.

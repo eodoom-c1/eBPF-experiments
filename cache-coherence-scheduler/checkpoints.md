@@ -1,8 +1,8 @@
 # Cache-Coherence Scheduler: Project Checkpoints
 
-Latest checkpoint: **CP-008, 2026-11-22**.
+Latest checkpoint: **CP-011, 2026-11-22**.
 
-**Current position:** [Results](results.md) consolidates 122 reviewed Intel N150 benchmark records: 72 primary comparisons and 50 follow-up diagnostics. Static shared co-location benefit persists at higher demand, unpaced, and with compute=1. The compute=4 anomaly remains unresolved; the hardware/PMU/placement-noise diagnostic branch is closed at the user's request. Recorded frequency bounds are not proof of fixed clocks. Next substantive work is uneven useful-work demand and a realistic workload tied to scheduling; no dynamic scheduler is implemented.
+**Current position:** [Results](results.md) covers 135 reviewed physical-Linux records: 72 primary comparisons, 50 follow-up diagnostics, 12 uneven-demand records, and one functional smoke. Three uneven-demand rounds confirm 64.16% lower mean shared CPU cost without a visible independent-worker rate penalty; the 26.47% padded saving also reproduces and limits attribution. Bounded synthetic confirmation is complete, not a universal admission boundary or steady-state result. CTest results remain unsupplied; hardware/PMU noise diagnostics stay closed. Next is realistic workload validation; no dynamic scheduler is implemented.
 
 See the [decision ledger](decisions.md) for why this direction was chosen. The [requirements](requirements.md) remain authoritative.
 
@@ -217,6 +217,42 @@ The compute=4 matrices and subsequent diagnostics do not establish a clean compu
 **Verification and provenance:** the results update checked 122 record totals, primary and diagnostic aggregates, 23 listed artifact SHA-256 fingerprints, links, and whitespace. Raw artifacts remain external to Git; exact tested-binary/source provenance is still unestablished. The assistant performed data/document checks only, not Linux builds, benchmarks, or CTest. This checkpoint update changes documentation only.
 
 **Next substantive gate:** uneven useful-work demand and a realistic workload tied to the scheduling objective. A dynamic detector/policy/backend, energy and application tail-latency results, broader generalization, and novelty remain unimplemented or unestablished. Resolving the compute=4 anomaly is not a prerequisite for moving on.
+
+## CP-009: Per-worker demand controls implemented and smoke verified
+
+Date: 2026-11-22.
+
+**Changed:** added `--rates R1,R2,R3,R4` and `--computes C1,C2,C3,C4` in thread identity order, preserving existing uniform controls and defaults. Zero list rates mean unpaced; scalar/list forms for the same control are rejected. Workers use their own settings for compute and pacing. Schema 4 reports per-thread settings and nullable unequal run-level fields. Focused parsing/JSON and rejection tests, standalone Linux CMake configuration, and exact commands are documented in [experimental methodology](experimental-methodology.md).
+
+**Verified:** the user supplied one successful colocated/shared smoke with 1,000 increments per worker, rates `0,1000,2000,4000`, and compute `0,1,2,3`. The assistant independently checked effective settings, expected endpoint CPUs `1,0,0,1`, schema fields, nominal deadlines, achieved-rate arithmetic, and all four modulo-`2^64` compute checksums. Paced workers finish just after their deadlines. See [the smoke results](results.md#uneven-demand-functional-smoke-not-pooled) for the exact measurements.
+
+**Evidence and limits:** `C:\Users\ericodoom\Downloads\uneven-demand-smoke.jsonl` remains unchanged and external to Git; its SHA-256 is among the report's 24 fingerprints. The smoke's build timestamp is `Nov 22 2026 20:40:50`, distinct from the earlier 122 records. Exact binary/source provenance remains unestablished. This confirms the supplied functional case, not CTest success, an admission threshold, or uneven-demand placement benefit. No assistant-run builds, benchmarks, or CTest; this handoff updates documentation only.
+
+**Next evidence gate:** matched baseline/co-located comparisons at identical uneven worker settings and CPU budget, examining total CPU cost and each worker's rate, including independent-worker regressions. Equal fixed work with unequal rates produces unequal durations, so do not treat these runs as common-duration steady-state admission or application tail latency. Realistic workload validation remains ahead; the compute=4 diagnostic branch stays closed.
+
+## CP-010: First uneven-demand placement screen reviewed
+
+Date: 2026-11-22.
+
+**Recorded:** the user supplied four conditions in `n150-uneven-demand.jsonl`, one run each. Every worker completes 600M increments; independent T1/T4 request 40M/s with compute=1, and sharing T2/T3 request 10M/s with compute=0. CPU slots, batch 50,000, idle 0, native PMUs, and recorded adaptive 700-3600-MHz limits are matched. See [the screen results](results.md#uneven-demand-placement-screen-one-round).
+
+**Outcome:** shared total CPU falls 74.300618885 to 26.210598532 seconds (**64.72%**). Sharing-pair CPU falls **75.61%**; independent-pair CPU is nearly unchanged (**0.47% lower**) and all workers deliver within **0.013%** of their requested rates. Shared raw selected RFO/HITM falls 89,763,756 to 0. However, padded CPU also falls **26.26%**, so the entire shared saving cannot be assigned to false sharing.
+
+**Verified and qualified:** settings, CPU endpoints, nominal deadlines, achieved-rate arithmetic, all 16 independently recomputed compute checksums, and all 256 PMU statuses check out. The artifact remains external to Git and has the report's 25th fingerprint. Earlier primary results and checkpoints are preserved. One run per condition is not repeatability or an admission boundary; 15/60-second unequal nominal durations allow independent workers to finish early and cease competing. Do not interpret approximately 40M/s whole-run throughput against the initial summed 100M/s requested rate. No assistant-run builds, workloads, or CTest; this update changes documentation only.
+
+**Next evidence gate:** bounded matched confirmation of this uneven-demand point, followed by a realistic scheduling workload. Keep per-worker rate and total CPU cost as the objectives, with explicit limits on steady-state and tail-latency claims. The compute=4 hardware/PMU diagnostic branch remains closed; no dynamic scheduler or universal admission rule is established.
+
+## CP-011: Uneven-demand confirmation complete
+
+Date: 2026-11-22.
+
+**Recorded:** the original uneven-demand file plus `n150-uneven-demand-round2-literal.jsonl` and `n150-uneven-demand-round3-literal.jsonl` provide 12 matched records, three per condition, with the final round reversed. Workload and recorded CPU/frequency settings match CP-010. The report now covers 135 physical-Linux records and 27 artifact fingerprints; earlier primary results and checkpoint history are preserved.
+
+**Confirmed:** mean shared CPU falls 73.740079453 to 26.427554648 seconds (**64.16%**), with round savings 64.72%/64.01%/63.74%. Sharing-pair CPU falls **75.04%**; independent-pair mean CPU stays nearly unchanged (**0.40% lower**) without a visible delivered-rate penalty. Maximum rate shortfall is 0.012857%. Shared raw selected RFO/HITM falls from 83-90 million to 0/0/2 across rounds. Padded CPU savings also reproduce (**26.47%** mean), limiting attribution of the full shared saving to false sharing. See [the three-round confirmation](results.md#uneven-demand-confirmation-three-rounds).
+
+**Verified and limited:** all 12 records, run order, 48 independently recomputed compute checksums/settings/CPU endpoints/pacing deadlines, rate arithmetic, and 768 requested PMU statuses check out. PMU running fractions span approximately 29.21-51.00%; phase/scaling limitations remain. Unequal 15/60-second nominal durations and early-finish interference prevent steady-state admission or application tail-latency claims. Exact binary/source provenance and separate CTest success remain unestablished. The assistant performed data/document checks, not builds, workloads, or CTest.
+
+**Disposition and next gate:** bounded synthetic confirmation is complete; no further repetitions for this point or hardware/PMU diagnostics. Select and validate a realistic workload with explicit useful-throughput/latency objectives and independent-work regression checks before claiming application benefit or a dynamic admission rule. No dynamic scheduler is implemented.
 
 ## Updating checkpoints
 

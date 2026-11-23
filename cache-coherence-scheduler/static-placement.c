@@ -21,7 +21,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#define WORKER_COUNT 4
+#include "workload-common.h"
+
 #define PMU_EVENT_COUNT 16
 
 /* Linux encodes the cache, operation, and access/miss selector in separate bytes. */
@@ -219,18 +220,11 @@ static void write_optional_metadata_value(FILE *output_stream, const char *value
 static void write_pmu_pair_metric(FILE *output_stream, const struct pmu_counter_result *reference, const struct pmu_counter_result *dependent, bool divide_counts);
 static void write_json_string(FILE *output_stream, const char *text);
 static void wait_for_target_increment_rate(const struct worker_state *worker, uint64_t completed_increments);
-static void parse_cpu_slots(const char *input_text, int logical_cpu_slots[WORKER_COUNT]);
 static void parse_worker_values(const char *input_text, const char *option_name, uint64_t maximum_value, uint64_t values[WORKER_COUNT]);
-static void read_cpu_sysfs_attribute(int logical_cpu, const char *attribute_path, char *attribute_text, size_t attribute_capacity);
 static int read_optional_text_file(const char *path, char *text, size_t capacity);
-static uint64_t parse_bounded_unsigned_integer(const char *input_text, const char *value_name, uint64_t minimum_value, uint64_t maximum_value);
 static void print_command_line_help(FILE *output_stream, const char *executable_name);
-static int verify_worker_cpu_affinity(int expected_logical_cpu);
 static void sleep_between_work_batches(uint64_t idle_microseconds);
 static void wait_for_benchmark_phase(pthread_barrier_t *phase_barrier);
-static void require_pthread_success(int error_code, const char *operation_name);
-static uint64_t read_clock_nanoseconds(clockid_t clock_id);
-static void exit_with_error(const char *error_format, ...);
 
 /// <summary>Builds run options from defaults and validated command-line arguments.</summary>
 /// <param name="argument_count">Number of arguments, including the executable name.</param>
@@ -431,68 +425,7 @@ static struct benchmark_options parse_benchmark_options(int argument_count, char
 /// <remarks>Uses Linux-reported topology, which cannot reveal hidden VM placement.</remarks>
 static size_t validate_cpu_topology(const struct benchmark_options *options)
 {
-    cpu_set_t allowed_cpu_set;
-
-    if (sched_getaffinity(0, sizeof(allowed_cpu_set), &allowed_cpu_set) != 0) 
-    {
-        exit_with_error("sched_getaffinity (CPU_SETSIZE=%d): %s", CPU_SETSIZE, strerror(errno));
-    }
-
-    char sibling_cpu_lists[WORKER_COUNT][4096];
-    size_t common_cache_line_bytes = 0;
-
-    for (int slot_index = 0; slot_index < WORKER_COUNT; ++slot_index) 
-    {
-        int logical_cpu = options->logical_cpu_slots[slot_index];
-
-        if (!CPU_ISSET(logical_cpu, &allowed_cpu_set)) 
-        {
-            exit_with_error("CPU %d is outside the process's allowed CPU set", logical_cpu);
-        }
-
-        read_cpu_sysfs_attribute(
-            logical_cpu,
-            "topology/thread_siblings_list",
-            sibling_cpu_lists[slot_index],
-            sizeof(sibling_cpu_lists[slot_index]));
-
-        char cache_line_size_text[64];
-
-        read_cpu_sysfs_attribute(
-            logical_cpu,
-            "cache/index0/coherency_line_size",
-            cache_line_size_text,
-            sizeof(cache_line_size_text));
-
-        size_t reported_cache_line_bytes = (size_t)parse_bounded_unsigned_integer(
-            cache_line_size_text,
-            "cache-line size",
-            sizeof(atomic_uint_fast64_t) * 2,
-            4096);
-
-        /* Clearing the lowest set bit gives zero only for a power of two. */
-        if ((reported_cache_line_bytes & (reported_cache_line_bytes - 1)) != 0 || reported_cache_line_bytes < sizeof(void *)) 
-        {
-            exit_with_error("Unsupported cache-line alignment: %zu", reported_cache_line_bytes);
-        }
-
-        if (slot_index != 0 && reported_cache_line_bytes != common_cache_line_bytes) 
-        {
-            exit_with_error("Selected CPUs have different cache-line sizes");
-        }
-
-        common_cache_line_bytes = reported_cache_line_bytes;
-    }
-
-    /* Sibling lists identify a core; CPU numbering need not be consecutive. */
-    if (strcmp(sibling_cpu_lists[0], sibling_cpu_lists[1]) != 0 ||
-        strcmp(sibling_cpu_lists[2], sibling_cpu_lists[3]) != 0 ||
-        strcmp(sibling_cpu_lists[0], sibling_cpu_lists[2]) == 0) 
-    {
-        exit_with_error("--cpus must describe two logical-CPU pairs on distinct physical cores");
-    }
-
-    return common_cache_line_bytes;
+    return validate_cpu_slots(options->logical_cpu_slots);
 }
 
 /// <summary>Pins one worker, performs its fixed workload, and records timing and placement.</summary>
@@ -1187,36 +1120,6 @@ static void wait_for_target_increment_rate(const struct worker_state *worker, ui
     }
 }
 
-/// <summary>Parses exactly four comma-separated logical CPU IDs into the slot array.</summary>
-/// <param name="input_text">CPU IDs in A0, A1, B0, B1 order.</param>
-/// <param name="logical_cpu_slots">Caller-owned output array containing four CPU slots.</param>
-/// <remarks>This validates syntax and mask bounds; topology is checked separately.</remarks>
-static void parse_cpu_slots(const char *input_text, int logical_cpu_slots[WORKER_COUNT])
-{
-    for (int slot_index = 0; slot_index < WORKER_COUNT; ++slot_index) 
-    {
-        char *unparsed_suffix;
-
-        errno = 0;
-
-        unsigned long parsed_value = strtoul(input_text, &unparsed_suffix, 10);
-        char expected_separator = slot_index == WORKER_COUNT - 1 ? '\0' : ',';
-
-        if (input_text[0] < '0' || input_text[0] > '9' || errno == ERANGE ||
-            parsed_value >= CPU_SETSIZE || *unparsed_suffix != expected_separator) 
-        {
-            exit_with_error("--cpus requires exactly A0,A1,B0,B1, each from 0 to %d", CPU_SETSIZE - 1);
-        }
-
-        logical_cpu_slots[slot_index] = (int)parsed_value;
-
-        if (expected_separator != '\0') 
-        {
-            input_text = unparsed_suffix + 1;
-        }
-    }
-}
-
 /// <summary>Parses four bounded unsigned workload values without dropping empty entries.</summary>
 /// <param name="input_text">Comma-separated values in T1-T4 order.</param>
 /// <param name="option_name">Option name to identify invalid input.</param>
@@ -1244,52 +1147,6 @@ static void parse_worker_values(const char *input_text, const char *option_name,
             input_text = unparsed_suffix + 1;
         }
     }
-}
-
-/// <summary>Reads one complete sysfs CPU attribute and removes its trailing newline.</summary>
-/// <param name="logical_cpu">Logical CPU whose sysfs directory is used.</param>
-/// <param name="attribute_path">Attribute path relative to that CPU directory.</param>
-/// <param name="attribute_text">Caller-owned buffer receiving a null-terminated string.</param>
-/// <param name="attribute_capacity">Buffer size in bytes, including space for the terminator.</param>
-/// <remarks>Missing, unreadable, or truncated attributes terminate the run.</remarks>
-static void read_cpu_sysfs_attribute(
-    int logical_cpu,
-    const char *attribute_path,
-    char *attribute_text,
-    size_t attribute_capacity)
-{
-    char sysfs_path[256];
-
-    int path_length = snprintf(
-        sysfs_path,
-        sizeof(sysfs_path),
-        "/sys/devices/system/cpu/cpu%d/%s",
-        logical_cpu,
-        attribute_path);
-
-    if (path_length < 0 || (size_t)path_length >= sizeof(sysfs_path)) {
-        exit_with_error("CPU property path is too long");
-    }
-
-    FILE *attribute_file = fopen(sysfs_path, "r");
-
-    if (attribute_file == NULL) {
-        exit_with_error("%s: %s", sysfs_path, strerror(errno));
-    }
-
-    if (fgets(attribute_text, (int)attribute_capacity, attribute_file) == NULL) {
-        exit_with_error("Cannot read %s", sysfs_path);
-    }
-
-    if (strchr(attribute_text, '\n') == NULL || ferror(attribute_file)) {
-        exit_with_error("Incomplete CPU property: %s", sysfs_path);
-    }
-
-    if (fclose(attribute_file) != 0) {
-        exit_with_error("Cannot close %s: %s", sysfs_path, strerror(errno));
-    }
-
-    attribute_text[strcspn(attribute_text, "\n")] = '\0';
 }
 
 /// <summary>Reads a complete bounded text file, returning an explicit error when unavailable.</summary>
@@ -1350,38 +1207,6 @@ static int read_optional_text_file(const char *path, char *text, size_t capacity
     return error_code;
 }
 
-/// <summary>Parses a complete unsigned decimal value and enforces inclusive bounds.</summary>
-/// <param name="input_text">The null-terminated number to parse.</param>
-/// <param name="value_name">Option or attribute name used in an error message.</param>
-/// <param name="minimum_value">Smallest accepted value.</param>
-/// <param name="maximum_value">Largest accepted value.</param>
-/// <returns>The validated value, or terminates the run for invalid input.</returns>
-static uint64_t parse_bounded_unsigned_integer(
-    const char *input_text,
-    const char *value_name,
-    uint64_t minimum_value,
-    uint64_t maximum_value)
-{
-    char *unparsed_suffix;
-
-    errno = 0;
-
-    /* The suffix starts at the first unconsumed character; '\0' means no text is left. */
-    unsigned long long parsed_value = strtoull(input_text, &unparsed_suffix, 10);
-
-    if (input_text[0] < '0' || input_text[0] > '9' || *unparsed_suffix != '\0' ||
-        errno == ERANGE || parsed_value < minimum_value || parsed_value > maximum_value)
-    {
-        exit_with_error(
-            "%s must be an integer from %" PRIu64 " to %" PRIu64,
-            value_name,
-            minimum_value,
-            maximum_value);
-    }
-
-    return (uint64_t)parsed_value;
-}
-
 /// <summary>Prints command-line options without starting a workload.</summary>
 /// <param name="output_stream">stdout for requested help, or stderr for usage errors.</param>
 /// <param name="executable_name">Executable name shown in the usage line.</param>
@@ -1412,38 +1237,6 @@ static void print_command_line_help(FILE *output_stream, const char *executable_
         "                                  Default: generic; native profile requires N150\n"
         "  --help                          Show this help\n",
         executable_name);
-}
-
-/// <summary>Checks that the calling worker is restricted to and running on its chosen CPU.</summary>
-/// <param name="expected_logical_cpu">The single logical CPU permitted for this worker.</param>
-/// <returns>The CPU observed by sched_getcpu after verifying the affinity mask.</returns>
-/// <remarks>This is an endpoint check, not continuous monitoring of external changes.</remarks>
-static int verify_worker_cpu_affinity(int expected_logical_cpu)
-{
-    cpu_set_t effective_cpu_set;
-
-    require_pthread_success(
-        pthread_getaffinity_np(pthread_self(), sizeof(effective_cpu_set), &effective_cpu_set),
-        "pthread_getaffinity_np");
-
-    int observed_logical_cpu = sched_getcpu();
-
-    if (observed_logical_cpu < 0) 
-    {
-        exit_with_error("sched_getcpu: %s", strerror(errno));
-    }
-
-    if (CPU_COUNT(&effective_cpu_set) != 1 ||
-        !CPU_ISSET(expected_logical_cpu, &effective_cpu_set) ||
-        observed_logical_cpu != expected_logical_cpu) 
-    {
-        exit_with_error(
-            "Expected singleton affinity to CPU %d; observed CPU %d",
-            expected_logical_cpu,
-            observed_logical_cpu);
-    }
-
-    return observed_logical_cpu;
 }
 
 /// <summary>Blocks the calling worker between batches to reduce its runnable demand.</summary>
@@ -1477,53 +1270,6 @@ static void wait_for_benchmark_phase(pthread_barrier_t *phase_barrier)
     {
         exit_with_error("pthread_barrier_wait: %s", strerror(barrier_status));
     }
-}
-
-/// <summary>Terminates the run if a pthread operation reports an error.</summary>
-/// <param name="error_code">The error code returned directly by the pthread operation.</param>
-/// <param name="operation_name">Operation name to include in the diagnostic.</param>
-/// <remarks>Pthread APIs return an error code rather than setting errno for this check.</remarks>
-static void require_pthread_success(int error_code, const char *operation_name)
-{
-    if (error_code != 0) 
-    {
-        exit_with_error("%s: %s", operation_name, strerror(error_code));
-    }
-}
-
-/// <summary>Reads the selected clock and converts its timestamp to nanoseconds.</summary>
-/// <param name="clock_id">A monotonic wall-time clock or the current thread's CPU-time clock.</param>
-/// <returns>The clock reading in nanoseconds.</returns>
-/// <remarks>Only differences between readings of the same clock are meaningful here.</remarks>
-static uint64_t read_clock_nanoseconds(clockid_t clock_id)
-{
-    struct timespec timestamp;
-
-    if (clock_gettime(clock_id, &timestamp) != 0) 
-    {
-        exit_with_error("clock_gettime: %s", strerror(errno));
-    }
-
-    return (uint64_t)timestamp.tv_sec * UINT64_C(1000000000) +
-           (uint64_t)timestamp.tv_nsec;
-}
-
-/// <summary>Reports an error to stderr and terminates the entire benchmark process.</summary>
-/// <param name="error_format">A printf-style error format.</param>
-/// <remarks>
-/// Remaining arguments supply the format values. This function never returns;
-/// a worker failure also ends the process so other threads cannot wait forever at a barrier.
-/// </remarks>
-static void exit_with_error(const char *error_format, ...)
-{
-    va_list format_arguments;
-
-    va_start(format_arguments, error_format);
-    vfprintf(stderr, error_format, format_arguments);
-    va_end(format_arguments);
-
-    fputc('\n', stderr);
-    exit(EXIT_FAILURE);
 }
 
 /// <summary>Writes workload JSON fields, retaining scalar values only when uniform.</summary>

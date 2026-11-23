@@ -188,8 +188,7 @@ On the Linux target, from the repository root, configure and build when ready:
 ```bash
 cmake -S cache-coherence-scheduler -B out/build/linux-release/cache-coherence-scheduler \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-cmake --build out/build/linux-release/cache-coherence-scheduler \
-  --target static-placement static-placement-worker-demand-options
+cmake --build out/build/linux-release/cache-coherence-scheduler
 ctest --test-dir out/build/linux-release/cache-coherence-scheduler --output-on-failure \
   -R 'static-placement-(invalid-arguments|worker-demand-options)'
 lscpu -e=CPU,SOCKET,CORE,ONLINE
@@ -390,7 +389,59 @@ Use the same profile for all four placement/layout conditions. First run a short
 
 The HITM event covers a specific L3-hit response path and does not identify a cache-line address or previous writer in this counting mode. Zero is a valid count and does not rule out false sharing on paths outside the filter. Do not equate this counter with all coherence traffic.
 
-## 9. Sources and implementation references
+## 9. Request-service application-like workload
+
+[request-service.c](request-service.c) serves real binary TCP lookup requests against an immutable 65,536-key table with 64-byte values. Four loopback ports identify T1-T4; each worker parses requests, looks up values, sends replies, and updates one ordinary completed-request statistics counter. Shared/padded statistics and baseline/co-located CPU assignments match the counter benchmark's layout and mapping. There are no amplified counter loops or artificial per-request compute steps. This is a purpose-built application-like workload, not validation of a production service or an assumption that co-location will help.
+
+[request-workload.py](request-workload.py) is an independent, open-loop load generator using four pinned processes. All streams offer arrivals for a **common 60-second window**, at **20,000/5,000/5,000/20,000 requests/s**. They do not wait for replies before scheduling new arrivals. Service and client CPUs must be on disjoint physical cores; the controller runs on client CPUs after launching the service. On the N150, the default service slots are `0,0,1,1` and client CPUs `2,3`. Connections, affinity setup, and value-table construction occur before the arrival window.
+
+The selected experimental objectives are **p99 <= 5 ms per worker and zero dropped requests**. Latency starts at each **intended arrival**, not its eventual socket-send time, so generator delay, client queuing, and response waiting are included. Every returned value and response ID is validated. CPU cost includes each service thread's scheduled user and kernel CPU time during its connection, excluding affinity/listener/table setup; generator CPU time is reported separately.
+
+### Build and functional check
+
+Linux, a C11 compiler, CMake >= 3.20, and Python >= 3.9 are required; no third-party Python packages or PMU privileges are needed. Shared CPU validation, affinity, numeric parsing, and clock helpers are factored into [workload-common.h](workload-common.h), without changing the existing benchmark's timed loop or JSON schema. CTest includes existing argument/worker-option regressions, service protocol/truncated-request checks, and open-loop arrival/framing/accounting tests. Builds and tests have not been run by the assistant.
+
+From the Linux repository root:
+
+```bash
+cmake -S cache-coherence-scheduler -B out/build/linux-release/cache-coherence-scheduler \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build out/build/linux-release/cache-coherence-scheduler
+ctest --test-dir out/build/linux-release/cache-coherence-scheduler --output-on-failure
+
+python3 cache-coherence-scheduler/request-workload.py \
+  --server out/build/linux-release/cache-coherence-scheduler/request-service \
+  --cpus 0,0,1,1 --client-cpus 2,3 \
+  --duration 2 --rates 200,50,50,200 \
+  --output request-workload-smoke.jsonl
+```
+
+The smoke runs all four conditions using literal argument lists internally, not shell expansion of placement names. A complete smoke file has four records, each offering 400/100/100/400 requests. Use a fresh output filename for a separate invocation; output is append-only. This checks functionality, not performance or production targets.
+
+### Approved common-duration comparison
+
+After the functional check, the following command runs one round of all four conditions at the approved defaults (approximately four minutes plus bounded draining):
+
+```bash
+python3 cache-coherence-scheduler/request-workload.py \
+  --server out/build/linux-release/cache-coherence-scheduler/request-service \
+  --cpus 0,0,1,1 --client-cpus 2,3 \
+  --duration 60 --rates 20000,5000,5000,20000 \
+  --p99-budget-ms 5 --drain-timeout 10 \
+  --output n150-request-workload.jsonl
+```
+
+Each condition offers 1.2M/0.3M/0.3M/1.2M requests, with no unequal-duration early exit. `--placement` and `--layout` can select one condition when supplied together. Keep frequency/background policy unchanged; no new hardware/PMU diagnostics are part of this workload.
+
+### Accounting, objectives, and limitations
+
+Each stream has a default 10,000-outstanding-request cap. Arrival scheduling continues when it is full: rejected arrivals are counted explicitly, not postponed to make the load closed-loop. After the arrival window, replies drain for at most 10 seconds. `dropped_requests` is client rejections plus requests still unanswered after draining; it is an application-level failure count, not a measurement of TCP packet loss. The record separates offered/admitted/sent/completed work, in-window and post-window completions, backlog, peak outstanding work, generation lag, and server-side peer errors.
+
+`backlog_at_window_end` counts admitted requests not observed complete during the arrival window, including generator/socket waiting. P99 covers completed requests; losses are reported separately and always fail the zero-drop objective. A worker passes only if no requests are dropped, no peer error is reported, and its p99 is present and within budget. The whole condition passes only if all four workers pass. Exit **0** means all selected conditions meet the objectives, **2** means complete measurement records include an objective failure, and **1** means an execution/protocol/integrity error; never interpret the latter as a successful measurement.
+
+Records include useful in-window throughput, service CPU nanoseconds per client-completed request, each worker's p99/objective outcome, policy snapshots, and SHA-256 fingerprints of the actual service binary and driver. These are separate experiment-schema-1 records, not static-placement schema-4 counter results. Large generator lag or saturation limits interpretation as service-only latency; local loopback clients still share memory/LLC and kernel networking with the service. CPU masks are not reservations, snapshots do not prove fixed clocks, and neither CPU savings nor p99 from this purpose-built read-only service establishes production generalization or energy savings.
+
+## 10. Sources and implementation references
 
 - [Linux v6.12 sched_ext documentation](https://github.com/torvalds/linux/blob/v6.12/Documentation/scheduler/sched-ext.rst): configuration, enrollment, CPU-selection semantics, and interface stability.
 - [Linux v6.12 sched_ext implementation](https://github.com/torvalds/linux/blob/v6.12/kernel/sched/ext.c): callback helper availability and dispatch restrictions.

@@ -73,3 +73,14 @@ file(REMOVE "${results_file}")
 if(NOT retained_results STREQUAL existing_results)
     message(FATAL_ERROR "Rejected arguments changed an existing results file")
 endif()
+
+if(DEFINED SERVICE)
+    set(BENCHMARK "${SERVICE}")
+    expect_rejection("--cpus requires exactly" --cpus=0,0,1)
+    expect_rejection("--placement must be baseline or colocated"
+        --cpus=0,0,1,1 --placement=invalid)
+    expect_rejection("--layout must be shared or padded"
+        --cpus=0,0,1,1 --layout=invalid)
+    expect_rejection("--base-port must be an integer"
+        --cpus=0,0,1,1 --base-port=65533)
+endif()
