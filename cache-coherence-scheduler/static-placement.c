@@ -42,11 +42,11 @@ struct benchmark_options {
     /// <summary>Number of counter increments each worker must complete.</summary>
     uint64_t increments_per_worker;
 
-    /// <summary>Target increments per second per worker, or zero for unpaced execution.</summary>
-    uint64_t target_increments_per_second;
+    /// <summary>Target increments per second in T1-T4 order; zero means unpaced.</summary>
+    uint64_t target_increments_per_second[WORKER_COUNT];
 
-    /// <summary>Synthetic integer-compute steps performed after each increment.</summary>
-    uint64_t compute_steps_per_increment;
+    /// <summary>Synthetic integer-compute steps per increment in T1-T4 order.</summary>
+    uint64_t compute_steps_per_increment[WORKER_COUNT];
 
     /// <summary>Maximum increments per batch before optional pacing or idle waits.</summary>
     uint64_t increments_per_batch;
@@ -151,6 +151,9 @@ struct worker_state {
     /// <summary>Shared run options, unchanged after the worker starts.</summary>
     const struct benchmark_options *options;
 
+    /// <summary>Zero-based T1-T4 identity, independent of the selected CPU placement.</summary>
+    int worker_index;
+
     /// <summary>Shared rendezvous for setup, timed start, and workload completion.</summary>
     pthread_barrier_t *phase_barrier;
 
@@ -203,6 +206,7 @@ static struct benchmark_options parse_benchmark_options(int argument_count, char
 static size_t validate_cpu_topology(const struct benchmark_options *options);
 static void *run_pinned_worker(void *worker_state_pointer);
 static void write_run_metadata(FILE *output_stream, const struct benchmark_options *options, int argument_count, char **arguments, const struct cpu_frequency_snapshot before[WORKER_COUNT], const struct cpu_frequency_snapshot after[WORKER_COUNT]);
+static void write_workload_settings(FILE *output_stream, const struct benchmark_options *options);
 static void write_worker_pmu_results(FILE *output_stream, const struct worker_state *worker);
 static void open_worker_pmu_counters(struct worker_state *worker);
 static const struct pmu_event_definition *get_pmu_event_definition(const struct benchmark_options *options, int event);
@@ -216,6 +220,7 @@ static void write_pmu_pair_metric(FILE *output_stream, const struct pmu_counter_
 static void write_json_string(FILE *output_stream, const char *text);
 static void wait_for_target_increment_rate(const struct worker_state *worker, uint64_t completed_increments);
 static void parse_cpu_slots(const char *input_text, int logical_cpu_slots[WORKER_COUNT]);
+static void parse_worker_values(const char *input_text, const char *option_name, uint64_t maximum_value, uint64_t values[WORKER_COUNT]);
 static void read_cpu_sysfs_attribute(int logical_cpu, const char *attribute_path, char *attribute_text, size_t attribute_capacity);
 static int read_optional_text_file(const char *path, char *text, size_t capacity);
 static uint64_t parse_bounded_unsigned_integer(const char *input_text, const char *value_name, uint64_t minimum_value, uint64_t maximum_value);
@@ -240,6 +245,10 @@ static struct benchmark_options parse_benchmark_options(int argument_count, char
     };
 
     bool cpu_slots_provided = false;
+    bool rate_provided = false;
+    bool rates_provided = false;
+    bool compute_provided = false;
+    bool computes_provided = false;
 
     /* The final all-zero entry terminates getopt_long's option table. */
     const struct option long_options[] = {
@@ -248,7 +257,9 @@ static struct benchmark_options parse_benchmark_options(int argument_count, char
         {"layout",     required_argument, NULL, 'l'},
         {"iterations", required_argument, NULL, 'n'},
         {"rate",       required_argument, NULL, 'r'},
+        {"rates",      required_argument, NULL, 'R'},
         {"compute",    required_argument, NULL, 'w'},
+        {"computes",   required_argument, NULL, 'W'},
         {"batch",      required_argument, NULL, 'b'},
         {"idle-us",    required_argument, NULL, 'i'},
         {"output",     required_argument, NULL, 'o'},
@@ -293,13 +304,35 @@ static struct benchmark_options parse_benchmark_options(int argument_count, char
             break;
 
         case 'r':
-            options.target_increments_per_second = parse_bounded_unsigned_integer(
-                optarg, "--rate", 1, UINT64_MAX);
+        {
+            uint64_t rate = parse_bounded_unsigned_integer(optarg, "--rate", 1, UINT64_MAX);
+            for (int worker_index = 0; worker_index < WORKER_COUNT; ++worker_index)
+            {
+                options.target_increments_per_second[worker_index] = rate;
+            }
+            rate_provided = true;
+            break;
+        }
+
+        case 'R':
+            parse_worker_values(optarg, "--rates", UINT64_MAX, options.target_increments_per_second);
+            rates_provided = true;
             break;
 
         case 'w':
-            options.compute_steps_per_increment = parse_bounded_unsigned_integer(
-                optarg, "--compute", 0, 1000000);
+        {
+            uint64_t compute = parse_bounded_unsigned_integer(optarg, "--compute", 0, 1000000);
+            for (int worker_index = 0; worker_index < WORKER_COUNT; ++worker_index)
+            {
+                options.compute_steps_per_increment[worker_index] = compute;
+            }
+            compute_provided = true;
+            break;
+        }
+
+        case 'W':
+            parse_worker_values(optarg, "--computes", 1000000, options.compute_steps_per_increment);
+            computes_provided = true;
             break;
 
         case 'b':
@@ -351,11 +384,26 @@ static struct benchmark_options parse_benchmark_options(int argument_count, char
         exit_with_error("Supply --cpus and no positional arguments");
     }
 
-    if (options.target_increments_per_second != 0 &&
-        (long double)options.increments_per_worker * 1000000000.0L /
-            (long double)options.target_increments_per_second >= (long double)UINT64_MAX)
+    if (rate_provided && rates_provided)
     {
-        exit_with_error("Requested rate and work exceed the supported timing range");
+        exit_with_error("Use either --rate or --rates, not both");
+    }
+
+    if (compute_provided && computes_provided)
+    {
+        exit_with_error("Use either --compute or --computes, not both");
+    }
+
+    for (int worker_index = 0; worker_index < WORKER_COUNT; ++worker_index)
+    {
+        uint64_t rate = options.target_increments_per_second[worker_index];
+        if (rate != 0 &&
+            (long double)options.increments_per_worker * 1000000000.0L /
+                (long double)rate >= (long double)UINT64_MAX)
+        {
+            exit_with_error("Requested rate and work exceed the supported timing range for thread %d",
+                worker_index + 1);
+        }
     }
 
     if (options.use_intel_n150_pmu)
@@ -457,6 +505,8 @@ static void *run_pinned_worker(void *worker_state_pointer)
     struct worker_state *worker = worker_state_pointer;
     const struct benchmark_options options = *worker->options;
     atomic_uint_fast64_t *operation_counter = worker->operation_counter;
+    uint64_t compute_steps = options.compute_steps_per_increment[worker->worker_index];
+    uint64_t target_rate = options.target_increments_per_second[worker->worker_index];
 
     worker->linux_thread_id = syscall(SYS_gettid);
 
@@ -513,7 +563,7 @@ static void *run_pinned_worker(void *worker_state_pointer)
                Relaxed atomics do not impose ordering on unrelated memory accesses. */
             atomic_fetch_add_explicit(operation_counter, 1, memory_order_relaxed);
 
-            for (uint64_t compute_step = 0; compute_step < options.compute_steps_per_increment; ++compute_step) 
+            for (uint64_t compute_step = 0; compute_step < compute_steps; ++compute_step)
             {
                 /* Unsigned wraparound is intentional; the printed checksum uses the result. */
                 compute_checksum = compute_checksum * UINT64_C(6364136223846793005) + 1;
@@ -522,7 +572,7 @@ static void *run_pinned_worker(void *worker_state_pointer)
 
         remaining_increments -= batch_increments;
 
-        if (options.target_increments_per_second != 0)
+        if (target_rate != 0)
         {
             wait_for_target_increment_rate(
                 worker,
@@ -1095,7 +1145,7 @@ static void wait_for_target_increment_rate(const struct worker_state *worker, ui
        Long double retains precision for the requested workload's nanosecond deadlines. */
     long double target_elapsed_nanoseconds =
         (long double)completed_increments * 1000000000.0L /
-        (long double)worker->options->target_increments_per_second;
+        (long double)worker->options->target_increments_per_second[worker->worker_index];
 
     uint64_t start_nanoseconds = *worker->benchmark_start_nanoseconds;
 
@@ -1161,6 +1211,35 @@ static void parse_cpu_slots(const char *input_text, int logical_cpu_slots[WORKER
         logical_cpu_slots[slot_index] = (int)parsed_value;
 
         if (expected_separator != '\0') 
+        {
+            input_text = unparsed_suffix + 1;
+        }
+    }
+}
+
+/// <summary>Parses four bounded unsigned workload values without dropping empty entries.</summary>
+/// <param name="input_text">Comma-separated values in T1-T4 order.</param>
+/// <param name="option_name">Option name to identify invalid input.</param>
+/// <param name="maximum_value">Inclusive upper bound; zero is always allowed.</param>
+/// <param name="values">Caller-owned output array.</param>
+static void parse_worker_values(const char *input_text, const char *option_name, uint64_t maximum_value, uint64_t values[WORKER_COUNT])
+{
+    for (int worker_index = 0; worker_index < WORKER_COUNT; ++worker_index)
+    {
+        char *unparsed_suffix;
+        errno = 0;
+        unsigned long long parsed_value = strtoull(input_text, &unparsed_suffix, 10);
+        char expected_separator = worker_index == WORKER_COUNT - 1 ? '\0' : ',';
+
+        if (input_text[0] < '0' || input_text[0] > '9' || errno == ERANGE ||
+            parsed_value > maximum_value || *unparsed_suffix != expected_separator)
+        {
+            exit_with_error("%s requires exactly four comma-separated integers from 0 to %" PRIu64,
+                option_name, maximum_value);
+        }
+
+        values[worker_index] = (uint64_t)parsed_value;
+        if (expected_separator != '\0')
         {
             input_text = unparsed_suffix + 1;
         }
@@ -1318,7 +1397,11 @@ static void print_command_line_help(FILE *output_stream, const char *executable_
         "  --iterations N                  Increments per worker (5000000)\n"
         "  --rate N                        Target increments/s per worker (unpaced)\n"
         "                                  Finish all work even when behind target\n"
+        "  --rates R1,R2,R3,R4              Per-worker rates; 0 means unpaced\n"
+        "                                  T1-T4 order; cannot combine with --rate\n"
         "  --compute N                     Compute steps per increment (0)\n"
+        "  --computes C1,C2,C3,C4           Per-worker compute steps in T1-T4 order\n"
+        "                                  Cannot combine with --compute\n"
         "  --batch N                       Increments per batch (1000)\n"
         "  --idle-us N                     Idle time between batches (0)\n"
         "  --output PATH                   Append JSON results to a text file\n"
@@ -1443,6 +1526,45 @@ static void exit_with_error(const char *error_format, ...)
     exit(EXIT_FAILURE);
 }
 
+/// <summary>Writes workload JSON fields, retaining scalar values only when uniform.</summary>
+/// <param name="output_stream">JSON destination.</param>
+/// <param name="options">Effective T1-T4 workload settings.</param>
+static void write_workload_settings(FILE *output_stream, const struct benchmark_options *options)
+{
+    bool uniform_compute = true;
+    bool uniform_rate = true;
+    for (int worker_index = 1; worker_index < WORKER_COUNT; ++worker_index)
+    {
+        uniform_compute = uniform_compute &&
+            options->compute_steps_per_increment[worker_index] == options->compute_steps_per_increment[0];
+        uniform_rate = uniform_rate &&
+            options->target_increments_per_second[worker_index] == options->target_increments_per_second[0];
+    }
+
+    fprintf(output_stream, "\"iterations_per_thread\":%" PRIu64 ",\"compute\":",
+        options->increments_per_worker);
+    if (uniform_compute)
+    {
+        fprintf(output_stream, "%" PRIu64, options->compute_steps_per_increment[0]);
+    }
+    else
+    {
+        fputs("null", output_stream);
+    }
+
+    fputs(",\"target_increments_per_second_per_thread\":", output_stream);
+    if (uniform_rate)
+    {
+        uint64_t rate = options->target_increments_per_second[0];
+        fprintf(output_stream, "%" PRIu64 ",\"nominal_work_seconds\":%.9f,",
+            rate, rate != 0 ? (double)options->increments_per_worker / (double)rate : 0.0);
+    }
+    else
+    {
+        fputs("null,\"nominal_work_seconds\":null,", output_stream);
+    }
+}
+
 /// <summary>Runs one experiment and writes validated JSON measurements to stdout or a text file.</summary>
 /// <param name="argument_count">Number of arguments, including the executable name.</param>
 /// <param name="arguments">Argument strings selecting CPUs, placement, layout, and workload size.</param>
@@ -1499,6 +1621,7 @@ int main(int argument_count, char **arguments)
     for (int worker_index = 0; worker_index < WORKER_COUNT; ++worker_index)
     {
         worker_states[worker_index].options = &options;
+        worker_states[worker_index].worker_index = worker_index;
         worker_states[worker_index].phase_barrier = &phase_barrier;
         worker_states[worker_index].benchmark_start_nanoseconds = &benchmark_start_nanoseconds;
         worker_states[worker_index].assigned_logical_cpu = options.logical_cpu_slots[worker_cpu_slot_indices[worker_index]];
@@ -1581,14 +1704,8 @@ int main(int argument_count, char **arguments)
        Summed worker CPU time / wall time is CPU equivalents, not physical-core utilization. */
     fprintf(
         results_stream,
-        "{\"schema_version\":3,\"pid\":%ld,\"placement\":\"%s\",\"layout\":\"%s\","
-        "\"cpu_slots\":[%d,%d,%d,%d],\"cache_line_bytes\":%zu,"
-        "\"iterations_per_thread\":%" PRIu64 ",\"compute\":%" PRIu64 ","
-        "\"target_increments_per_second_per_thread\":%" PRIu64 ","
-        "\"nominal_work_seconds\":%.9f,"
-        "\"batch\":%" PRIu64 ",\"idle_us\":%" PRIu64 ","
-        "\"elapsed_seconds\":%.9f,\"increments_per_second\":%.3f,"
-        "\"scheduled_cpu_equivalents\":%.6f,\"threads\":[",
+        "{\"schema_version\":4,\"pid\":%ld,\"placement\":\"%s\",\"layout\":\"%s\","
+        "\"cpu_slots\":[%d,%d,%d,%d],\"cache_line_bytes\":%zu,",
         (long)getpid(),
         options.colocate_sharing_threads ? "colocated" : "baseline",
         options.separate_sharing_counters ? "padded" : "shared",
@@ -1596,13 +1713,14 @@ int main(int argument_count, char **arguments)
         options.logical_cpu_slots[1],
         options.logical_cpu_slots[2],
         options.logical_cpu_slots[3],
-        cache_line_bytes,
-        options.increments_per_worker,
-        options.compute_steps_per_increment,
-        options.target_increments_per_second,
-        options.target_increments_per_second != 0
-            ? (double)options.increments_per_worker / (double)options.target_increments_per_second
-            : 0.0,
+        cache_line_bytes);
+
+    write_workload_settings(results_stream, &options);
+    fprintf(
+        results_stream,
+        "\"batch\":%" PRIu64 ",\"idle_us\":%" PRIu64 ","
+        "\"elapsed_seconds\":%.9f,\"increments_per_second\":%.3f,"
+        "\"scheduled_cpu_equivalents\":%.6f,\"threads\":[",
         options.increments_per_batch,
         options.idle_microseconds_per_batch,
         elapsed_seconds,
@@ -1616,6 +1734,8 @@ int main(int argument_count, char **arguments)
             "%s{\"thread\":%d,\"tid\":%ld,\"cpu\":%d,"
             "\"start_cpu\":%d,\"end_cpu\":%d,"
             "\"counter_address\":\"%p\",\"counter_offset\":%zu,"
+            "\"compute\":%" PRIu64 ",\"target_increments_per_second\":%" PRIu64 ","
+            "\"nominal_work_seconds\":%.9f,"
             "\"completion_seconds\":%.9f,\"cpu_seconds\":%.9f,"
             "\"increments_per_second\":%.3f,"
             "\"cpu_percent\":%.3f,\"checksum\":%" PRIu64 ","
@@ -1629,6 +1749,11 @@ int main(int argument_count, char **arguments)
             worker_states[worker_index].observed_end_cpu,
             (void *)worker_states[worker_index].operation_counter,
             counter_offsets[worker_index],
+            options.compute_steps_per_increment[worker_index],
+            options.target_increments_per_second[worker_index],
+            options.target_increments_per_second[worker_index] != 0
+                ? (double)options.increments_per_worker / (double)options.target_increments_per_second[worker_index]
+                : 0.0,
             (double)worker_states[worker_index].completion_nanoseconds / 1e9,
             (double)worker_states[worker_index].consumed_cpu_nanoseconds / 1e9,
             (double)options.increments_per_worker /

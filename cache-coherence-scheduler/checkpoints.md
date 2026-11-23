@@ -1,8 +1,8 @@
 # Cache-Coherence Scheduler: Project Checkpoints
 
-Latest checkpoint: **CP-005, 2026-11-20**.
+Latest checkpoint: **CP-008, 2026-11-22**.
 
-**Current position:** the user has supplied basic and rate-controlled WSL measurements and selected a physical Linux device for subsequent runs. Optional PMU collection and portable machine context are now implemented in source but not compiled or executed by the assistant. Native counter availability, measurement quality, and repeatable placement effects remain unverified. No dynamic scheduler is implemented.
+**Current position:** [Results](results.md) consolidates 122 reviewed Intel N150 benchmark records: 72 primary comparisons and 50 follow-up diagnostics. Static shared co-location benefit persists at higher demand, unpaced, and with compute=1. The compute=4 anomaly remains unresolved; the hardware/PMU/placement-noise diagnostic branch is closed at the user's request. Recorded frequency bounds are not proof of fixed clocks. Next substantive work is uneven useful-work demand and a realistic workload tied to scheduling; no dynamic scheduler is implemented.
 
 See the [decision ledger](decisions.md) for why this direction was chosen. The [requirements](requirements.md) remain authoritative.
 
@@ -114,6 +114,109 @@ Date: 2026-11-20.
 **Verification:** Implementation and perf API semantics were reviewed; focused argument-rejection checks were added. No configure, build, CTest, or benchmark was run by the assistant. Hardware-event support, permission handling, multiplexing behavior, and runtime JSON output still require native Linux validation.
 
 **Next evidence gate:** Build on the physical target, validate PMU availability or explicit failures and cross-check counts, then collect repeated matched placement/layout runs with identical instrumentation. Preserve source revision and ambient conditions alongside the self-contained records.
+
+## CP-006: Repeated physical-Linux placement benefit with native coherence counters
+
+Date: 2026-11-20. JSON recording times are UTC on 2026-11-21.
+
+### Implementation and experiment verified
+
+The user rebuilt [static-placement.c](static-placement.c), passed an integrated native-counter smoke run, and supplied three rounds of the four placement/layout conditions. All 12 result records parsed as version-3 JSON, used matching work and instrumentation settings, and reported available counters and expected CPU endpoints. These user-run measurements are not evidence that the separate CTest argument checks passed; the assistant did not run builds or tests.
+
+The explicit `--pmu-profile intel-n150` profile collects the verified retired-load L1 miss, completed ITLB walk, and L3-hit RFO/snoop-HITM selectors, including the offcore `config1` filter. Generic requests remain the default. The incompatible generic-access/native-miss L1 hit estimate is explicitly unavailable. See section 8 of the [experimental methodology](experimental-methodology.md) for collection semantics and commands.
+
+**Target and placement:** Intel N150, Ubuntu/Linux `7.0.0-43-generic`, SMT inactive, physical cores 0 and 1 in package 0. Slots `0,0,1,1` mean time-sharing, not SMT. Baseline places T1/T2 on CPU 0 and T3/T4 on CPU 1; co-location places T2/T3 on CPU 0 and T1/T4 on CPU 1.
+
+**Matched inputs:** 600,000,000 increments per worker, target 10,000,000 increments/s per worker, batch 50,000, compute 0, idle 0, and the native PMU profile. Each run completes 2.4 billion increments at approximately 40 million increments/s aggregate in 60 seconds. Shared layout puts T2/T3 at offsets 0/8 within one 64-byte line; padded layout uses offsets 0/64.
+
+Rounds 1 and 2 used baseline/shared, colocated/shared, baseline/padded, colocated/padded. Round 3 reversed that order.
+
+### Raw evidence and provenance
+
+The original JSONL files remain external to the repository in `C:\Users\ericodoom\Downloads`; they were read, not modified or copied into the repository. Each contains four records.
+
+| Round | File | SHA-256 |
+| --- | --- | --- |
+| 1 | `n150-placement.txt` | `e4235a175be65836517ce87b90f809e81cdac28eda7a5ce5562e2d3530220819` |
+| 2 | `n150-placement2.txt` | `1200e914c2a8e4c22c8a1bca923376b02c8a4c2177ebf04ab7f0d482b40a396c` |
+| 3 | `n150-placement3.txt` | `a959eefde7f37ee01880061afe4d121eaf8aeec61efce6e7186937957464247c` |
+
+The records span `2026-11-21T05:58:06Z` through `2026-11-21T06:27:31Z`. The first record in each file reports build timestamp `Nov 20 2026 21:50:27`. The source checkout at ledger entry is `50ee6f1dea23ee5205cee4570a8670c16e59523f`; JSON does not contain a binary digest or Git revision, so the tested binary's correspondence to that commit is not independently established.
+
+### Measured CPU outcome
+
+CPU time is the sum of the four workers' reported CPU seconds: time spent scheduled on a CPU, including hardware stalls, but excluding sleeping or waiting to be scheduled. Reduction is `(baseline - colocated) / baseline`. It is not fewer CPUs, lower clock frequency, shorter wall time, whole-machine utilization, or measured energy savings.
+
+| Round | Layout | Baseline CPU seconds | Colocated CPU seconds | CPU reduction |
+| --- | --- | ---: | ---: | ---: |
+| 1 | Shared | 54.876899 | 39.811416 | 27.45% |
+| 1 | Padded | 39.724250 | 39.786664 | -0.16% |
+| 2 | Shared | 54.542746 | 37.498328 | 31.25% |
+| 2 | Padded | 39.848505 | 38.412882 | 3.60% |
+| 3, reversed | Shared | 54.247505 | 38.267694 | 29.46% |
+| 3, reversed | Padded | 39.874844 | 38.285522 | 3.99% |
+
+Using the ratio of three-round mean CPU times, shared layout improves from **54.555717 to 38.525813 CPU seconds: 29.38% lower**, saving 16.029904 CPU seconds per run. Padded improves from **39.815866 to 38.828356 CPU seconds: 2.48% lower**. Shared co-location increases the independent pair's CPU cost in every round; all totals above already include that regression, not just the sharing-pair improvement.
+
+### Coherence-path evidence
+
+Observed raw `ocr.demand_rfo.l3_hit.snoop_hitm` counts summed over T2/T3:
+
+| Round | Baseline/shared | Colocated/shared | Baseline/padded | Colocated/padded |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 103,457,632 | 35 | 3 | 5 |
+| 2 | 89,948,563 | 14 | 10 | 6 |
+| 3, reversed | 91,795,584 | 1 | 3 | 12 |
+
+The large shared-layout CPU benefit and collapse of this counted ownership-response path repeat after reversing run order. Retired-load L1 misses also fall sharply, and sharing-pair IPC rises from approximately 0.14-0.15 to 0.55. This supports avoiding cross-core coherence costs as the mechanism, rather than a benefit inferred only from fewer events.
+
+### Conclusion, limits, and next evidence gate
+
+**Supported hypothesis:** on this device, core pair, controlled workload, and requested rate, time-sharing the falsely sharing pair on one core reduces total worker CPU cost at the same delivered throughput. The substantially smaller padded difference is an important control; it is not assumed to be exactly zero.
+
+Frequencies were not fixed; all runs used `powersave`, and endpoint frequency observations are not runtime averages. Counters were multiplexed with approximately 37.5% coverage, so scaled counts are estimates and raw counts cover only running windows. The RFO/HITM filter covers a particular L3-hit response path, including exclusive-prefetch requests; it neither measures all coherence traffic nor identifies a cache-line address. Affinity is checked at endpoints, not continuously, and cores are not reserved.
+
+There is no measured energy result, application tail-latency result, adaptive policy, broader workload/topology validation, or publication-novelty claim. The next evidence gate is to test sensitivity to frequency policy and requested rate, then additional core pairs or workloads before generalizing or building dynamic control.
+
+## CP-007: Frequency-bounded and higher-demand results consolidated
+
+Date: 2026-11-21.
+
+**Recorded:** [results.md](results.md) consolidates 36 matched native-profile records across three experiment blocks, each with three repeats per condition and a reversed-order third round. It includes CPU-time definitions, inputs/topology/frequency conditions, aggregate and per-round effects, coherence/cache/TLB evidence, separate exploratory findings, and artifact fingerprints. CP-006 is retained as the earlier evidence snapshot.
+
+**Measured outcome:** shared-layout CPU reductions are 29.38% under adaptive limits, 56.27% under 1400-MHz bounds at 10M/s per worker, and 54.12% at 20M/s per worker. Padded reductions are 2.48%, 0.18%, and 0.29%. At higher demand, baseline/shared averages 61.143M/s and 39.327 seconds, versus 79.999M/s and 30.000 seconds colocated for the same 2.4-billion-increment budget. RFO/HITM repeatedly falls to background levels.
+
+**Verified and qualified:** the assistant re-parsed all main records, recomputed the tables, and checked artifact SHA-256 fingerprints; all requested counters and CPU endpoint checks were available/consistent. User-run follow-up clock checks average 1404/1405 MHz baseline and 1411/1418 MHz colocated. They establish comparable clocks for those checks, not continuous proof for all earlier runs. No build, benchmark, or CTest was run by the assistant.
+
+**Next evidence gate:** continue with 40M/s per worker, unpaced execution, and compute sensitivity, then uneven demand and realistic work before dynamic control. Exact tested-binary/source provenance, broader topology/workload evidence, energy, tail latency, and novelty remain unestablished.
+
+## CP-008: Static results consolidated and diagnostic branch closed
+
+Date: 2026-11-22.
+
+**Recorded:** [results.md](results.md) now covers 72 primary records across A-F and 50 separately qualified follow-up records. It includes the 40M/s-per-worker point, unpaced execution, compute=1, noisy compute=4 matrices, frequency/HWP checks, core swaps, and PMU ablation. Earlier checkpoints remain historical snapshots.
+
+### Latest primary outcomes
+
+Three repetitions per condition, with the third round reversed; 600M increments per worker and the same two-core budget. Reductions use ratios of mean worker CPU times; throughput gains use mean per-run throughput.
+
+| Experiment | Shared CPU reduction | Shared throughput gain | Padded CPU reduction |
+| --- | ---: | ---: | ---: |
+| D: 40M/s per worker, compute=0 | 42.70% | 74.43% | 2.54% |
+| E: unpaced, compute=0 | 43.26% | 76.42% | 2.33% |
+| F: unpaced, compute=1 | 44.35% | 79.45% | 0.76% |
+
+D delivers 79.649M/s baseline/shared versus 138.929M/s colocated/shared; all conditions miss the 160M/s target. Both shared placements occupy approximately two CPU equivalents, so lower CPU cost means earlier completion, not lower occupancy while running. The repeated RFO/HITM collapse and primary padded controls support the static coherence explanation.
+
+### Diagnostic disposition and limits
+
+The compute=4 matrices and subsequent diagnostics do not establish a clean compute/benefit boundary. Busy-clock reports vary despite recorded bounds; captured HWP requests reach the hardware, but perfectly constant frequency is not established. Initial worker/core asymmetry does not reproduce consistently, and a slow run remains with benchmark PMUs disabled. Neither a permanent worker/core defect nor a sole PMU cause has been demonstrated.
+
+**Closed at the user's request:** preserve these observations and their uncertainty rather than extending hardware/PMU/placement-noise diagnostics. The proposed one-worker-per-core test was withdrawn; no results from it are included. Padded co-location remains a negative control, not a recommended false-sharing intervention.
+
+**Verification and provenance:** the results update checked 122 record totals, primary and diagnostic aggregates, 23 listed artifact SHA-256 fingerprints, links, and whitespace. Raw artifacts remain external to Git; exact tested-binary/source provenance is still unestablished. The assistant performed data/document checks only, not Linux builds, benchmarks, or CTest. This checkpoint update changes documentation only.
+
+**Next substantive gate:** uneven useful-work demand and a realistic workload tied to the scheduling objective. A dynamic detector/policy/backend, energy and application tail-latency results, broader generalization, and novelty remain unimplemented or unestablished. Resolving the compute=4 anomaly is not a prerequisite for moving on.
 
 ## Updating checkpoints
 

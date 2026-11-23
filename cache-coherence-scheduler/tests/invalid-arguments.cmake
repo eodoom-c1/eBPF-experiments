@@ -26,6 +26,32 @@ expect_rejection("--rate must be an integer"
     --cpus=0,0,1,1 --rate=999999999999999999999)
 expect_rejection("Requested rate and work exceed the supported timing range"
     --cpus=0,0,1,1 --iterations=4611686018427387903 --rate=1)
+expect_rejection("--rates requires exactly four"
+    --cpus=0,0,1,1 --rates=1,2,3)
+expect_rejection("--rates requires exactly four"
+    --cpus=0,0,1,1 --rates=1,2,3,4,5)
+expect_rejection("--rates requires exactly four"
+    --cpus=0,0,1,1 --rates=1,,3,4)
+expect_rejection("--rates requires exactly four"
+    --cpus=0,0,1,1 --rates=1,2,3,)
+expect_rejection("--rates requires exactly four"
+    --cpus=0,0,1,1 --rates=1,-2,3,4)
+expect_rejection("--rates requires exactly four"
+    --cpus=0,0,1,1 --rates=1,2,3,18446744073709551616)
+expect_rejection("--computes requires exactly four"
+    --cpus=0,0,1,1 --computes=)
+expect_rejection("--computes requires exactly four"
+    --cpus=0,0,1,1 --computes=0,1,2,1000001)
+expect_rejection("Use either --rate or --rates, not both"
+    --cpus=0,0,1,1 --rate=1 --rates=1,2,3,4)
+expect_rejection("Use either --rate or --rates, not both"
+    --cpus=0,0,1,1 --rates=1,2,3,4 --rate=1)
+expect_rejection("Use either --compute or --computes, not both"
+    --cpus=0,0,1,1 --compute=1 --computes=0,1,2,3)
+expect_rejection("Use either --compute or --computes, not both"
+    --cpus=0,0,1,1 --computes=0,1,2,3 --compute=1)
+expect_rejection("Requested rate and work exceed the supported timing range for thread 4"
+    --cpus=0,0,1,1 --iterations=4611686018427387903 --rates=0,0,0,1)
 expect_rejection("doesn't allow an argument"
     --cpus=0,0,1,1 --pmu=enabled)
 expect_rejection("--iterations must be an integer"

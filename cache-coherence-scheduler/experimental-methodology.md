@@ -186,16 +186,21 @@ The first implementation is [static-placement.c](static-placement.c), built as t
 On the Linux target, from the repository root, configure and build when ready:
 
 ```bash
-cmake --preset linux-release
-cmake --build --preset linux-release --target static-placement
-ctest --test-dir out/build/linux-release --output-on-failure
+cmake -S cache-coherence-scheduler -B out/build/linux-release/cache-coherence-scheduler \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build out/build/linux-release/cache-coherence-scheduler \
+  --target static-placement static-placement-worker-demand-options
+ctest --test-dir out/build/linux-release/cache-coherence-scheduler --output-on-failure \
+  -R 'static-placement-(invalid-arguments|worker-demand-options)'
 lscpu -e=CPU,SOCKET,CORE,ONLINE
 grep Cpus_allowed_list /proc/self/status
 ```
 
-In Visual Studio, select a remote Linux or existing WSL target and the Linux Release preset. A Windows-host configuration skips this executable with a status message; it does not build a native Windows version. The benchmark needs Linux pthread affinity, accessible sysfs CPU topology/cache information, and lock-free atomic counters. It does not need BPF, SCX, or PMU privileges.
+Configure the benchmark directory directly; this checkout does not contain a root CMake project or Linux preset. In Visual Studio, select a remote Linux or existing WSL target. A Windows-host configuration skips this executable with a status message; it does not build a native Windows version. The benchmark needs Linux pthread affinity, accessible sysfs CPU topology/cache information, and lock-free atomic counters. It does not need BPF, SCX, or PMU privileges.
 
 The CTest check exercises malformed/overflowing CPU lists, zero work, invalid placement names, an empty output path, invalid or unrepresentable rate settings, and misuse of the no-argument `--pmu` flag, requiring nonzero exit and no measurement output. It also checks that enabling PMU collection does not bypass invalid-work rejection or modify an existing results file when arguments are rejected. It does not require specific CPU topology; valid-placement and performance checks still require the selected hardware. Tests have not been run by the assistant.
+
+The worker-demand options test checks accepted scalar/list settings, zero/unpaced entries, bounds, independent rate/compute controls, placement-independent T1-T4 ordering, and uniform versus unequal run-level JSON. Argument-rejection tests also cover malformed workload lists, mixed scalar/list forms, and timing overflow in a later worker. These additions have not been built or run by the assistant.
 
 Supply `--cpus A0,A1,B0,B1`, replacing the names with logical CPU numbers. A0 and A1 must belong to physical core A; B0 and B1 to a different physical core B. Use different siblings within each pair for an SMT experiment, or repeat a logical CPU within each pair for time-sharing. IDs must fit `CPU_SETSIZE` and the process's allowed mask. Validation uses Linux's reported topology; it cannot establish a VM's hidden physical placement.
 
@@ -232,7 +237,7 @@ To collect the four conditions in one portable file, use the same output path fo
 "$BIN" --cpus "$CPUS" --placement colocated --layout padded --output results.txt
 ```
 
-Copy `results.txt` back to the analysis machine. It is newline-delimited JSON, readable as plain text, with the same settings and metrics as console output. A new file will contain four lines if all four runs succeed. Repeating the commands adds more records; use separate files for different devices or experiment sessions. New records have `schema_version: 3`, including the PMU profile and additional event configuration; version 2 introduced machine/invocation/topology context. Record relevant background activity and power conditions separately, since snapshots do not continuously monitor them.
+Copy `results.txt` back to the analysis machine. It is newline-delimited JSON, readable as plain text, with the same settings and metrics as console output. A new file will contain four lines if all four runs succeed. Repeating the commands adds more records; use separate files for different devices or experiment sessions. New records have `schema_version: 4`, adding effective per-thread workload settings and nullable run-level settings for unequal workloads. Version 3 introduced the PMU profile and additional event configuration; version 2 introduced machine/invocation/topology context. Record relevant background activity and power conditions separately, since snapshots do not continuously monitor them.
 
 File output happens after timing and result validation. Open, write, flush, and close failures return a nonzero exit status. A failed write can leave a partial final record, which must not be analyzed as a successful run. Run sequentially when sharing an output file; concurrent writers are not coordinated.
 
@@ -240,7 +245,9 @@ File output happens after timing and result validation. Open, write, flush, and 
 | --- | --- |
 | `--iterations N` | Increments per worker; default 5,000,000. Increase for a meaningful measurement interval. |
 | `--rate N` | Target increments per second per worker; omitted by default for unpaced execution. All requested work is completed even when the target cannot be sustained. |
+| `--rates R1,R2,R3,R4` | Exactly four targets in T1-T4 order; each accepts 0 for unpaced execution. Cannot combine with `--rate`. |
 | `--compute N` | Synthetic integer-compute steps per increment; default 0. This is not a promised instruction/cycle count. |
+| `--computes C1,C2,C3,C4` | Exactly four compute-step counts in T1-T4 order, each from 0 to 1,000,000. Cannot combine with `--compute`. |
 | `--batch N` | Increments per batch before optional pacing or idle waits; default 1,000. |
 | `--idle-us N` | Requested sleep between batches, excluding the final batch; default 0, maximum 1,000,000. Actual sleeps can be longer. |
 | `--output PATH` | Append one JSON result line to a text file instead of stdout; earlier runs are preserved. |
@@ -264,7 +271,42 @@ Pacing occurs after each batch against the common monotonic start. Ahead-of-sche
 
 The example's one-million-increment batches represent 2 ms of requested work at 500 million/s. Larger batches reduce clock-check and sleep overhead but permit larger bursts; very small batches can make sleep granularity dominate the workload. Rate-control overhead and pacing waits are included in elapsed/completion measurements; blocked sleep time is excluded from thread CPU time. Combining `--rate` with `--idle-us` can further reduce achieved throughput.
 
-The JSON adds `target_increments_per_second_per_thread` and `nominal_work_seconds`, both zero when unpaced. Each thread reports `increments_per_second` using its own completion interval; the existing top-level throughput still uses the common run interval. Compare these achieved rates with the target, rather than assuming a requested rate was delivered.
+With uniform settings, JSON retains numeric `compute`, `target_increments_per_second_per_thread`, and `nominal_work_seconds`; the latter two are zero when all workers are unpaced. With unequal compute, the run-level `compute` is `null`. With unequal rates, the run-level rate and nominal duration are `null`. Each thread now reports its effective `compute`, `target_increments_per_second`, and `nominal_work_seconds` (zero for an unpaced worker), alongside `increments_per_second` using its own completion interval. Top-level throughput still uses the common run interval. Compare each achieved rate with its own target, rather than assuming a requested rate was delivered.
+
+### Uneven worker demand
+
+Workload lists follow **thread identity T1-T4, not CPU slots**; co-location changes CPUs but not which worker receives each setting. The controls are independent: a rate list can accompany uniform `--compute`, and a compute list can accompany uniform `--rate`. Existing uniform options and defaults retain their workload behavior.
+
+After building, a short functional smoke command on the N150's previously used CPU0/1 pair is:
+
+```bash
+BIN=out/build/linux-release/cache-coherence-scheduler/static-placement
+"$BIN" --cpus 0,0,1,1 --placement colocated --layout shared \
+  --iterations 1000 --rates 0,1000,2000,4000 --computes 0,1,2,3 --batch 100 \
+  --output uneven-demand-smoke.jsonl
+```
+
+Every worker must still complete 1,000 increments. T1 is unpaced; T2/T3/T4 have nominal completion times of 1/0.5/0.25 seconds and must not finish before those deadlines. Inspect each thread's effective settings, completion time, and checksum. This is a functional check, not performance evidence; compute checksums should agree with the corresponding uniform-compute case for the same thread seed and work budget.
+
+For an illustrative unequal-demand comparison, hold this workload constant across all four conditions:
+
+```bash
+BIN=out/build/linux-release/cache-coherence-scheduler/static-placement
+for layout in shared padded; do
+  for placement in baseline colocated; do
+    "$BIN" --cpus 0,0,1,1 --placement "$placement" --layout "$layout" \
+      --iterations 600000000 --rates 40000000,10000000,10000000,40000000 \
+      --computes 1,0,0,1 --batch 50000 --pmu-profile intel-n150 \
+      --output uneven-demand.jsonl || exit 1
+  done
+done
+```
+
+These settings put higher requested demand on independent T1/T4 and lower demand on sharing T2/T3. They are not a validated rate boundary. Keep CPU/frequency policy and background conditions unchanged between comparisons; repeat matched conditions and reverse run order before drawing a placement conclusion. Do not restart hardware/PMU noise diagnostics.
+
+Compare summed worker CPU cost **and each worker's achieved/requested rate**, including independent-worker regressions. Unpaced workers have no rate target. Pacing and start/finish overhead make exact target equality inappropriate; report the rate fractions and declare any admission tolerance rather than silently treating a shortfall as success.
+
+`--iterations` remains the same fixed work budget for every worker. Consequently, unequal rates give unequal nominal durations: 15 seconds for T1/T4 and 60 seconds for T2/T3 in the example. Early finishers stop competing for CPU, so these finite-work averages do not establish common-duration steady-state admission, arrival backlog, or application tail latency. A realistic workload remains the next validation gate.
 
 ### Output, checks, and interpretation
 
@@ -274,7 +316,7 @@ Worker setup and affinity occur before the measured phase. Wall time includes st
 
 The program checks singleton affinity and observed CPU at setup and completion, validates every final counter against the requested work, and rejects unavailable CPUs, inconsistent topology/cache-line sizes, non-lock-free counters, and failed affinity operations. It does not continuously monitor external changes or reserve CPUs from unrelated workloads.
 
-First functional checks on Linux should cover all four placement/layout combinations, duplicated CPU slots for time-sharing, invalid same-core A/B groups, and CPUs outside the allowed mask. For file output, check repeated appends, valid JSON on each line, empty stdout, and a nonzero exit for an inaccessible output path. Failed runs must not be interpreted as measurements. These checks and performance runs have not been executed yet.
+First functional checks on Linux should cover all four placement/layout combinations, duplicated CPU slots for time-sharing, invalid same-core A/B groups, and CPUs outside the allowed mask. For file output, check repeated appends, valid JSON on each line, empty stdout, and a nonzero exit for an inaccessible output path. Failed runs must not be interpreted as measurements. User-run matched performance comparisons are recorded in [results](results.md); those runs do not establish that all argument-rejection or file-error checks passed.
 
 For rate control, first try `--iterations 1000 --rate 1000 --batch 100`: every worker should complete exactly 1,000 increments and take at least approximately one second. Also test a rate the device cannot sustain, verifying that all work completes after the nominal duration and achieved rates are lower than the target. Without `--rate`, no pacing sleeps should occur. Pacing runtime checks have not been executed by the assistant.
 
@@ -344,7 +386,7 @@ cc -std=c11 -O3 -pthread static-placement.c -o static-placement
 ./static-placement --cpus 0,0,1,1 --placement baseline --layout shared --iterations 600000000 --rate 10000000 --batch 50000 --pmu-profile intel-n150 --output physical-n150-results.txt
 ```
 
-Use the same profile for all four placement/layout conditions. First run a short check with `--iterations 5000000` and no `--rate`, confirming all three native fields report `status: "ok"` and positive running time. Successful standalone `perf stat` requests do not establish that the benchmark's grouped collection works; compilation and integrated runtime validation of this profile remain pending.
+Use the same profile for all four placement/layout conditions. First run a short check with `--iterations 5000000` and no `--rate`, confirming all three native fields report `status: "ok"` and positive running time. Successful standalone `perf stat` requests do not establish that the benchmark's grouped collection works. The user has since compiled and validated integrated collection through a smoke check and matched comparisons; see [results](results.md) for the measured evidence and remaining limitations.
 
 The HITM event covers a specific L3-hit response path and does not identify a cache-line address or previous writer in this counting mode. Zero is a valid count and does not rule out false sharing on paths outside the filter. Do not equate this counter with all coherence traffic.
 
