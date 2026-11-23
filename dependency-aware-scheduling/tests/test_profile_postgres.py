@@ -114,6 +114,39 @@ class RunqueueTests(unittest.TestCase):
 
 
 class CorrelationTests(unittest.TestCase):
+    def test_recorded_monotonic_clock_allows_analysis_without_commandline(self):
+        intervals, quality = PROFILE.runqueue_intervals([
+            "# clockid: monotonic (1)\n",
+            wake("1.000000000", 20),
+            switch("1.100000000", 0, "S", 20),
+        ], {20})
+        result = PROFILE.assess([sample(1_050_000_000, 1_060_000_000)], intervals, quality)
+        self.assertEqual(result["assessment"], "candidate_observed")
+        self.assertEqual(result["receive_wait_with_confirmed_runnable_worker"], 1)
+
+    def test_recorded_incompatible_clock_overrides_commandline_in_either_order(self):
+        command = "# cmdline : perf record -a --clockid mono\n"
+        clock = "# clockid: monotonic_raw (4)\n"
+        for headers in ([command, clock], [clock, command]):
+            with self.subTest(headers=headers):
+                intervals, quality = PROFILE.runqueue_intervals([
+                    *headers,
+                    wake("1.000000000", 20),
+                    switch("1.100000000", 0, "S", 20),
+                ], {20})
+                with self.assertRaisesRegex(ValueError, "CLOCK_MONOTONIC"):
+                    PROFILE.assess(
+                        [sample(1_050_000_000, 1_060_000_000)], intervals, quality
+                    )
+
+    def test_malformed_recorded_clock_cannot_fall_back_to_commandline(self):
+        with self.assertRaisesRegex(ValueError, "Malformed clock metadata"):
+            PROFILE.runqueue_intervals([
+                "# cmdline : perf record -a --clockid mono\n",
+                "# clockid: monotonic (invalid)\n",
+                wake("1.000000000", 20),
+            ], {20})
+
     def test_multiple_workers_do_not_double_count_a_leader_observation(self):
         result = PROFILE.assess(
             [sample(110, 120, (20, 21)), sample(130, 140, (20, 21))],

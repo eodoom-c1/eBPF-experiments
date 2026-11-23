@@ -74,8 +74,10 @@ python3 dependency-aware-scheduling/profile-postgres.py analyze \
 ```
 
 Check both perf commands' exit status and stderr before interpreting a recording.
-The analyzer verifies the recorded `--clockid mono` command in the trace header
-and rejects reported lost events, malformed/out-of-order events, and traces
+The analyzer verifies `# clockid: monotonic (1)` in the trace header, falling
+back to the recorded `--clockid mono` command only if clock metadata is absent.
+Recorded incompatible or malformed clocks are rejected even if the command
+claims `mono`. It also rejects reported lost events, malformed/out-of-order events, and traces
 that do not cover the sample window. Use fresh output paths for another
 run: activity and assessment files are created exclusively, not overwritten.
 The existing `out/` ignore rule keeps measurement artifacts outside Git.

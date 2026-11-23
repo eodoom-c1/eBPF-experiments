@@ -238,9 +238,16 @@ def runqueue_intervals(lines, worker_pids):
     unobserved_enqueue = 0
     abandoned_enqueue = 0
     clock_id = None
+    recorded_clock_id = None
     for number, line in enumerate(lines, 1):
         if re.search(r"PERF_RECORD_LOST|LOST\s+\d+\s+events", line, re.IGNORECASE):
             raise ValueError(f"Lost scheduler events at trace line {number}")
+        clock = re.match(r"^\s*#\s*clockid\s*:\s*(.*)$", line)
+        if clock:
+            metadata = re.fullmatch(r".+?\s+\((-?\d+)\)\s*", clock.group(1))
+            if metadata is None:
+                raise ValueError(f"Malformed clock metadata at trace line {number}")
+            recorded_clock_id = int(metadata.group(1))
         command = re.match(r"^\s*#\s*cmdline\s*:\s*(.*)$", line)
         if command:
             arguments = shlex.split(command.group(1))
@@ -293,18 +300,23 @@ def runqueue_intervals(lines, worker_pids):
                 running.discard(pid)
             elif pid not in running:
                 pending.setdefault(pid, timestamp)
+    if recorded_clock_id is not None:
+        clock_id = "mono" if recorded_clock_id == 1 else str(recorded_clock_id)
     return intervals, {
         "first_event_ns": first_ns, "last_event_ns": last_ns,
         "dispatches_without_observed_enqueue": unobserved_enqueue,
         "abandoned_enqueues": abandoned_enqueue,
         "unfinished_enqueues": len(pending),
         "clock_id": clock_id,
+        "recorded_clock_id": recorded_clock_id,
     }
 
 
 def assess(samples, intervals, trace):
     if trace.get("clock_id") != "mono":
-        raise ValueError("Trace header must confirm perf record --clockid mono")
+        raise ValueError(
+            "Trace header must confirm CLOCK_MONOTONIC (1) or perf record --clockid mono"
+        )
     if (
         trace["first_event_ns"] is None
         or trace["first_event_ns"] > samples[0]["begin_ns"]
