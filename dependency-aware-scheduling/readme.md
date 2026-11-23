@@ -63,7 +63,7 @@ Collection does not execute or create application queries.
 After `perf record` finishes, export and analyze:
 
 ```bash
-sudo perf script --header --show-lost-events --ns -F cpu,time,event,trace \
+sudo perf script --header --show-lost-events --ns -F trace:cpu,time,event,trace \
   -i out/research/dependency-baseline/sched.data \
   > out/research/dependency-baseline/sched.txt
 
@@ -79,6 +79,11 @@ and rejects reported lost events, malformed/out-of-order events, and traces
 that do not cover the sample window. Use fresh output paths for another
 run: activity and assessment files are created exclusively, not overwritten.
 The existing `out/` ignore rule keeps measurement artifacts outside Git.
+Both raw `key=value` scheduler fields and libtraceevent's compact
+`command:pid [priority]` formatting are supported. The `trace:` field selector
+avoids irrelevant warnings about fields for non-tracepoint event types.
+Metadata errors such as `Invalid HEADER_EVENT_DESC` are separate from scheduler
+formatting: do not ignore export errors or interpret a partial export as a result.
 
 ## Interpretation and research gate
 

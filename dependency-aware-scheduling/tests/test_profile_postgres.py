@@ -43,6 +43,41 @@ def sample(begin, end, workers=(20,)):
 
 
 class RunqueueTests(unittest.TestCase):
+    def test_perf_compact_scheduler_records_are_decoded(self):
+        lines = [
+            "[000]  4301.529249251:       sched:sched_wakeup: migration/0:19 [0] CPU:000\n",
+            "[000]  4301.529251644:       sched:sched_switch: perf:14613 [120] R ==> migration/0:19 [0]\n",
+            "[000]  4301.529261342:       sched:sched_switch: migration/0:19 [0] S ==> swapper/0:0 [120]\n",
+            "[001]  4301.529275540:       sched:sched_wakeup: migration/1:43 [0] CPU:001\n",
+            "[001]  4301.529276947:       sched:sched_switch: perf:14613 [120] R ==> migration/1:43 [0]\n",
+            "[001]  4301.529283687:       sched:sched_switch: migration/1:43 [0] S ==> swapper/1:0 [120]\n",
+        ]
+        intervals, quality = PROFILE.runqueue_intervals(lines, {19, 43})
+        self.assertEqual(intervals[19], [(4_301_529_249_251, 4_301_529_251_644)])
+        self.assertEqual(intervals[43], [(4_301_529_275_540, 4_301_529_276_947)])
+        self.assertEqual(quality["unfinished_enqueues"], 0)
+
+    def test_mixed_formats_signed_priorities_and_preemption_are_supported(self):
+        lines = [
+            "[000] 1.000000000: sched:sched_wakeup_new: comm=work: queue pid=20 prio=-1 target_cpu=0\n",
+            "[000] 1.010000000: sched:sched_switch: swapper/0:0 [120] S ==> work: queue:20 [-1]\n",
+            "[000] 1.020000000: sched:sched_switch: work: queue:20 [-1] R+ ==> swapper/0:0 [120]\n",
+            switch("1.030000000", 0, "S", 20).replace("next_prio=120", "next_prio=-1"),
+            "[000] 1.040000000: sched:sched_process_exit: work: queue:20 [-1]\n",
+            switch("1.050000000", 20, "X", 0).replace("prev_prio=120", "prev_prio=-1"),
+        ]
+        intervals, quality = PROFILE.runqueue_intervals(lines, {20})
+        self.assertEqual(intervals[20], [
+            (1_000_000_000, 1_010_000_000), (1_020_000_000, 1_030_000_000),
+        ])
+        self.assertEqual(quality["unfinished_enqueues"], 0)
+
+    def test_malformed_compact_record_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Malformed sched_wakeup"):
+            PROFILE.runqueue_intervals([
+                "[000] 1.000000000: sched:sched_wakeup: postgres:20 [120] CPU:invalid\n",
+            ], {20})
+
     def test_wake_preemption_and_running_wake_are_distinguished(self):
         lines = [
             "# cmdline : perf record -a --clockid mono -e sched:sched_switch\n",

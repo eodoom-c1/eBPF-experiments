@@ -23,10 +23,14 @@ EVENT = re.compile(
     r"sched:(sched_switch|sched_wakeup_new|sched_wakeup|sched_process_exit):\s+(.*)$"
 )
 SWITCH = re.compile(
-    r"\bprev_pid=(\d+)\s+prev_prio=\d+\s+prev_state=(\S+)\s+"
-    r"==>\s+next_comm=.*?\s+next_pid=(\d+)\s+next_prio=\d+"
+    r"\bprev_pid=(\d+)\s+prev_prio=-?\d+\s+prev_state=(\S+)\s+"
+    r"==>\s+next_comm=.*?\s+next_pid=(\d+)\s+next_prio=-?\d+"
 )
-PID = re.compile(r"\bpid=(\d+)\s+prio=\d+")
+COMPACT_SWITCH = re.compile(
+    r".*:(\d+)\s+\[-?\d+\]\s+(\S+)\s+==>\s+.*:(\d+)\s+\[-?\d+\]"
+)
+PID = re.compile(r"\bpid=(\d+)\s+prio=-?\d+")
+COMPACT_PID = re.compile(r".*:(\d+)\s+\[-?\d+\](?:\s+CPU:\d+)?")
 SESSION_SQL = """
 SET statement_timeout = '5s';
 SET application_name = 'dependency-scheduling-observer';
@@ -258,7 +262,7 @@ def runqueue_intervals(lines, worker_pids):
             first_ns = timestamp
         last_ns = timestamp
         if kind == "sched_switch":
-            switch = SWITCH.search(fields)
+            switch = SWITCH.search(fields) or COMPACT_SWITCH.fullmatch(fields)
             if switch is None:
                 raise ValueError(f"Malformed sched_switch at trace line {number}")
             previous, state, following = switch.groups()
@@ -277,7 +281,7 @@ def runqueue_intervals(lines, worker_pids):
                     intervals[following].append((queued_at, timestamp))
                 running.add(following)
         else:
-            match = PID.search(fields)
+            match = PID.search(fields) or COMPACT_PID.fullmatch(fields)
             if match is None:
                 raise ValueError(f"Malformed {kind} at trace line {number}")
             pid = int(match.group(1))
